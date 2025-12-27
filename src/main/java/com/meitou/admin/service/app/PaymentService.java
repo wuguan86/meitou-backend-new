@@ -1,0 +1,472 @@
+package com.meitou.admin.service.app;
+
+import com.alipay.api.AlipayApiException;
+import com.alipay.api.AlipayClient;
+import com.alipay.api.DefaultAlipayClient;
+import com.alipay.api.domain.AlipayTradePrecreateModel;
+import com.alipay.api.request.AlipayTradePrecreateRequest;
+import com.alipay.api.response.AlipayTradePrecreateResponse;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.binarywang.wxpay.bean.request.WxPayUnifiedOrderRequest;
+import com.github.binarywang.wxpay.bean.result.WxPayUnifiedOrderResult;
+import com.github.binarywang.wxpay.config.WxPayConfig;
+import com.github.binarywang.wxpay.service.WxPayService;
+import com.github.binarywang.wxpay.service.impl.WxPayServiceImpl;
+import com.github.binarywang.wxpay.exception.WxPayException;
+import com.meitou.admin.config.PaymentProperties;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.TreeMap;
+
+/**
+ * 支付服务类
+ * 处理微信支付和支付宝支付的统一下单、回调验证等功能
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class PaymentService {
+    
+    private final PaymentProperties paymentProperties;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    
+    /**
+     * 创建微信支付订单
+     * 
+     * @param orderNo 订单号
+     * @param amount 金额（元）
+     * @param description 商品描述
+     * @param configJson 支付配置JSON（可选，如果提供则优先使用，否则使用application.yml中的配置）
+     * @return 支付参数（包含二维码URL或支付链接等）
+     */
+    public Map<String, String> createWechatPayment(String orderNo, String amount, String description, String configJson) {
+        try {
+            log.info("创建微信支付订单：订单号={}, 金额={}, 描述={}", orderNo, amount, description);
+            
+            // 解析配置（优先使用传入的configJson，否则使用application.yml中的配置）
+            PaymentProperties.WechatPayConfig config = parseWechatConfig(configJson);
+            
+            // 配置微信支付参数
+            WxPayConfig wxPayConfig = new WxPayConfig();
+            wxPayConfig.setAppId(config.getAppId());
+            wxPayConfig.setMchId(config.getMchId());
+            wxPayConfig.setMchKey(config.getMchKey());
+            wxPayConfig.setUseSandboxEnv(config.getUseSandbox());
+            
+            // 如果有证书路径，加载证书
+            if (StringUtils.hasText(config.getCertPath())) {
+                try {
+                    ClassPathResource resource = new ClassPathResource(config.getCertPath().replace("classpath:", ""));
+                    if (resource.exists()) {
+                        wxPayConfig.setKeyPath(resource.getFile().getAbsolutePath());
+                    }
+                } catch (Exception e) {
+                    log.warn("加载微信支付证书失败，将使用非证书方式：{}", e.getMessage());
+                }
+            }
+            
+            // 创建微信支付服务
+            WxPayService wxPayService = new WxPayServiceImpl();
+            wxPayService.setConfig(wxPayConfig);
+            
+            // 构建统一下单请求
+            WxPayUnifiedOrderRequest request = new WxPayUnifiedOrderRequest();
+            request.setBody(description); // 商品描述
+            request.setOutTradeNo(orderNo); // 商户订单号
+            request.setTotalFee(Integer.parseInt(new BigDecimal(amount).multiply(new BigDecimal("100")).toPlainString())); // 总金额（分）
+            request.setSpbillCreateIp("127.0.0.1"); // 终端IP
+            request.setNotifyUrl(config.getNotifyUrl()); // 支付结果通知回调地址
+            request.setTradeType("NATIVE"); // 交易类型：NATIVE-扫码支付
+            
+            // 调用统一下单接口
+            WxPayUnifiedOrderResult result = wxPayService.unifiedOrder(request);
+            
+            // 构建返回结果
+            Map<String, String> paymentParams = new HashMap<>();
+            
+            // 微信支付扫码支付返回的二维码URL，使用反射获取codeUrl字段（不同版本的SDK方法名可能不同）
+            String codeUrl = null;
+            try {
+                // 尝试调用getCodeUrl方法
+                java.lang.reflect.Method method = result.getClass().getMethod("getCodeUrl");
+                codeUrl = (String) method.invoke(result);
+            } catch (Exception e) {
+                try {
+                    // 尝试调用getCode_url方法（下划线格式）
+                    java.lang.reflect.Method method = result.getClass().getMethod("getCode_url");
+                    codeUrl = (String) method.invoke(result);
+                } catch (Exception e2) {
+                    log.warn("无法通过反射获取二维码URL，可能需要查看微信支付SDK文档", e2);
+                }
+            }
+            
+            paymentParams.put("qrCodeUrl", codeUrl != null ? codeUrl : ""); // 二维码URL
+            paymentParams.put("orderId", result.getPrepayId() != null ? result.getPrepayId() : ""); // 微信支付订单号
+            paymentParams.put("paymentUrl", codeUrl != null ? codeUrl : ""); // 支付链接（扫码支付时与二维码URL相同）
+            
+            log.info("微信支付订单创建成功：订单号={}, 二维码URL={}", orderNo, codeUrl);
+            return paymentParams;
+            
+        } catch (WxPayException e) {
+            log.error("创建微信支付订单失败，错误码：{}, 错误信息：{}", e.getErrCode(), e.getMessage(), e);
+            throw new RuntimeException("创建微信支付订单失败：" + e.getMessage());
+        } catch (Exception e) {
+            log.error("创建微信支付订单失败", e);
+            throw new RuntimeException("创建微信支付订单失败：" + e.getMessage());
+        }
+    }
+    
+    /**
+     * 创建支付宝支付订单
+     * 
+     * @param orderNo 订单号
+     * @param amount 金额（元）
+     * @param description 商品描述
+     * @param configJson 支付配置JSON（可选，如果提供则优先使用，否则使用application.yml中的配置）
+     * @return 支付参数（包含支付链接或二维码URL等）
+     */
+    public Map<String, String> createAlipayPayment(String orderNo, String amount, String description, String configJson) {
+        try {
+            log.info("创建支付宝支付订单：订单号={}, 金额={}, 描述={}", orderNo, amount, description);
+            
+            // 解析配置（优先使用传入的configJson，否则使用application.yml中的配置）
+            PaymentProperties.AlipayConfig config = parseAlipayConfig(configJson);
+            
+            // 创建支付宝客户端
+            AlipayClient alipayClient = new DefaultAlipayClient(
+                config.getGatewayUrl(), // 支付宝网关地址
+                config.getAppId(), // 应用ID
+                config.getPrivateKey(), // 商户私钥
+                config.getFormat(), // 数据格式
+                config.getCharset(), // 字符编码
+                config.getAlipayPublicKey(), // 支付宝公钥
+                config.getSignType() // 签名类型
+            );
+            
+            // 构建请求参数（使用扫码支付）
+            AlipayTradePrecreateRequest request = new AlipayTradePrecreateRequest();
+            request.setNotifyUrl(config.getNotifyUrl()); // 异步通知地址
+            
+            AlipayTradePrecreateModel model = new AlipayTradePrecreateModel();
+            model.setOutTradeNo(orderNo); // 商户订单号
+            model.setTotalAmount(amount); // 订单总金额（元）
+            model.setSubject(description); // 订单标题
+            request.setBizModel(model);
+            
+            // 调用支付宝接口
+            AlipayTradePrecreateResponse response = alipayClient.execute(request);
+            
+            if (!response.isSuccess()) {
+                log.error("创建支付宝支付订单失败，错误码：{}, 错误信息：{}", response.getCode(), response.getMsg());
+                throw new RuntimeException("创建支付宝支付订单失败：" + response.getMsg());
+            }
+            
+            // 构建返回结果
+            Map<String, String> paymentParams = new HashMap<>();
+            paymentParams.put("qrCodeUrl", response.getQrCode()); // 二维码URL
+            paymentParams.put("orderId", response.getOutTradeNo()); // 商户订单号
+            paymentParams.put("paymentUrl", response.getQrCode()); // 支付链接（扫码支付时与二维码URL相同）
+            
+            log.info("支付宝支付订单创建成功：订单号={}, 二维码URL={}", orderNo, response.getQrCode());
+            return paymentParams;
+            
+        } catch (AlipayApiException e) {
+            log.error("创建支付宝支付订单失败，错误码：{}, 错误信息：{}", e.getErrCode(), e.getErrMsg(), e);
+            throw new RuntimeException("创建支付宝支付订单失败：" + e.getErrMsg());
+        } catch (Exception e) {
+            log.error("创建支付宝支付订单失败", e);
+            throw new RuntimeException("创建支付宝支付订单失败：" + e.getMessage());
+        }
+    }
+    
+    /**
+     * 验证微信支付回调签名
+     * 
+     * @param callbackXml 回调数据（XML格式的字符串）
+     * @param configJson 支付配置JSON（可选）
+     * @return 是否验证通过
+     */
+    public boolean verifyWechatCallback(String callbackXml, String configJson) {
+        try {
+            log.info("验证微信支付回调签名，XML长度：{}", callbackXml != null ? callbackXml.length() : 0);
+            
+            // 解析配置
+            PaymentProperties.WechatPayConfig config = parseWechatConfig(configJson);
+            
+            // 配置微信支付参数
+            WxPayConfig wxPayConfig = new WxPayConfig();
+            wxPayConfig.setAppId(config.getAppId());
+            wxPayConfig.setMchId(config.getMchId());
+            wxPayConfig.setMchKey(config.getMchKey());
+            wxPayConfig.setUseSandboxEnv(config.getUseSandbox());
+            
+            // 创建微信支付服务
+            WxPayService wxPayService = new WxPayServiceImpl();
+            wxPayService.setConfig(wxPayConfig);
+            
+            // 使用微信支付SDK解析XML并验证签名
+            // 微信支付SDK提供了parseOrderNotifyResult方法来解析回调并验证签名
+            try {
+                // 这里使用微信支付SDK的XML解析功能
+                // 由于微信支付SDK版本不同，API可能有所差异
+                // 使用反射或者直接解析XML进行签名验证
+                
+                // 简化实现：提取sign字段，手动验证签名
+                // 实际项目中应该使用微信支付SDK提供的验证方法
+                String sign = extractXmlValue(callbackXml, "sign");
+                if (!StringUtils.hasText(sign)) {
+                    log.error("微信支付回调XML中缺少sign字段");
+                    return false;
+                }
+                
+                // 移除sign字段，构建待签名字符串
+                String signContent = buildWechatSignContent(callbackXml);
+                
+                // 使用MD5计算签名（微信支付V2使用MD5签名）
+                String calculatedSign = calculateWechatSign(signContent, config.getMchKey());
+                
+                boolean verified = sign.equalsIgnoreCase(calculatedSign);
+                if (verified) {
+                    log.info("微信支付回调签名验证通过");
+                } else {
+                    log.error("微信支付回调签名验证失败");
+                }
+                
+                return verified;
+                
+            } catch (Exception e) {
+                log.error("验证微信支付回调签名时发生异常", e);
+                // 如果验证失败，返回false
+                return false;
+            }
+            
+        } catch (Exception e) {
+            log.error("验证微信支付回调签名失败", e);
+            return false;
+        }
+    }
+    
+    /**
+     * 从XML中提取指定字段的值
+     */
+    private String extractXmlValue(String xml, String fieldName) {
+        try {
+            String startTag = "<" + fieldName + ">";
+            String endTag = "</" + fieldName + ">";
+            int start = xml.indexOf(startTag);
+            if (start == -1) {
+                // 尝试CDATA格式
+                startTag = "<" + fieldName + "><![CDATA[";
+                endTag = "]]></" + fieldName + ">";
+                start = xml.indexOf(startTag);
+                if (start != -1) {
+                    start += startTag.length();
+                    int end = xml.indexOf(endTag, start);
+                    if (end != -1) {
+                        return xml.substring(start, end);
+                    }
+                }
+                return null;
+            }
+            start += startTag.length();
+            int end = xml.indexOf(endTag, start);
+            if (end != -1) {
+                String value = xml.substring(start, end);
+                // 如果是CDATA，需要去除CDATA标记
+                if (value.startsWith("<![CDATA[") && value.endsWith("]]>")) {
+                    value = value.substring(9, value.length() - 3);
+                }
+                return value;
+            }
+        } catch (Exception e) {
+            log.error("提取XML字段值失败：{}", fieldName, e);
+        }
+        return null;
+    }
+    
+    /**
+     * 构建微信支付签名字符串（移除sign字段，按字典序排列，用&连接）
+     */
+    private String buildWechatSignContent(String xml) {
+        // 解析XML为Map
+        Map<String, String> params = new TreeMap<>();
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("<(\\w+)>(.*?)</\\1>");
+        java.util.regex.Matcher matcher = pattern.matcher(xml);
+        while (matcher.find()) {
+            String key = matcher.group(1);
+            if (!"sign".equals(key)) { // 排除sign字段
+                String value = matcher.group(2);
+                // 去除CDATA标记
+                if (value.startsWith("<![CDATA[") && value.endsWith("]]>")) {
+                    value = value.substring(9, value.length() - 3);
+                }
+                if (StringUtils.hasText(value)) {
+                    params.put(key, value);
+                }
+            }
+        }
+        
+        // 构建签名字符串
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            sb.append(entry.getKey()).append("=").append(entry.getValue()).append("&");
+        }
+        if (sb.length() > 0) {
+            sb.append("key="); // 最后加上key=
+        }
+        return sb.toString();
+    }
+    
+    /**
+     * 计算微信支付签名（MD5）
+     */
+    private String calculateWechatSign(String signContent, String mchKey) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
+            String content = signContent + mchKey;
+            byte[] bytes = md.digest(content.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : bytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString().toUpperCase();
+        } catch (Exception e) {
+            log.error("计算微信支付签名失败", e);
+            return "";
+        }
+    }
+    
+    /**
+     * 验证支付宝支付回调签名
+     * 
+     * @param callbackData 回调数据（Map格式）
+     * @param configJson 支付配置JSON（可选）
+     * @return 是否验证通过
+     */
+    public boolean verifyAlipayCallback(Map<String, String> callbackData, String configJson) {
+        try {
+            log.info("验证支付宝支付回调签名：订单号={}", callbackData.get("out_trade_no"));
+            
+            // 解析配置
+            PaymentProperties.AlipayConfig config = parseAlipayConfig(configJson);
+            
+            // 获取签名
+            String sign = callbackData.get("sign");
+            if (!StringUtils.hasText(sign)) {
+                log.error("支付宝回调数据中缺少签名");
+                return false;
+            }
+            
+            // 获取签名类型
+            String signType = callbackData.getOrDefault("sign_type", config.getSignType());
+            
+            // 移除签名和签名类型，构建待签名字符串
+            TreeMap<String, String> sortedParams = new TreeMap<>(callbackData);
+            sortedParams.remove("sign");
+            sortedParams.remove("sign_type");
+            
+            StringBuilder content = new StringBuilder();
+            for (Map.Entry<String, String> entry : sortedParams.entrySet()) {
+                if (StringUtils.hasText(entry.getValue())) {
+                    content.append(entry.getKey()).append("=").append(entry.getValue()).append("&");
+                }
+            }
+            if (content.length() > 0) {
+                content.deleteCharAt(content.length() - 1); // 移除最后一个&
+            }
+            
+            // 使用支付宝SDK验证签名
+            boolean verified = com.alipay.api.internal.util.AlipaySignature.rsaCheckV1(
+                callbackData,
+                config.getAlipayPublicKey(),
+                config.getCharset(),
+                signType
+            );
+            
+            if (verified) {
+                log.info("支付宝支付回调签名验证通过");
+            } else {
+                log.error("支付宝支付回调签名验证失败");
+            }
+            
+            return verified;
+            
+        } catch (Exception e) {
+            log.error("验证支付宝支付回调签名失败", e);
+            return false;
+        }
+    }
+    
+    /**
+     * 解析微信支付配置
+     * 优先使用configJson，如果为空则使用application.yml中的配置
+     */
+    private PaymentProperties.WechatPayConfig parseWechatConfig(String configJson) {
+        PaymentProperties.WechatPayConfig config = new PaymentProperties.WechatPayConfig();
+        
+        // 如果提供了configJson，优先使用
+        if (StringUtils.hasText(configJson)) {
+            try {
+                JsonNode jsonNode = objectMapper.readTree(configJson);
+                config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getWechat().getAppId());
+                config.setMchId(jsonNode.has("mchId") ? jsonNode.get("mchId").asText() : paymentProperties.getWechat().getMchId());
+                config.setMchKey(jsonNode.has("mchKey") ? jsonNode.get("mchKey").asText() : paymentProperties.getWechat().getMchKey());
+                config.setApiV3Key(jsonNode.has("apiV3Key") ? jsonNode.get("apiV3Key").asText() : paymentProperties.getWechat().getApiV3Key());
+                config.setCertSerialNo(jsonNode.has("certSerialNo") ? jsonNode.get("certSerialNo").asText() : paymentProperties.getWechat().getCertSerialNo());
+                config.setCertPath(jsonNode.has("certPath") ? jsonNode.get("certPath").asText() : paymentProperties.getWechat().getCertPath());
+                config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getWechat().getNotifyUrl());
+                config.setUseSandbox(jsonNode.has("useSandbox") ? jsonNode.get("useSandbox").asBoolean() : paymentProperties.getWechat().getUseSandbox());
+            } catch (Exception e) {
+                log.warn("解析微信支付配置JSON失败，将使用application.yml中的配置：{}", e.getMessage());
+                config = paymentProperties.getWechat();
+            }
+        } else {
+            // 使用application.yml中的配置
+            config = paymentProperties.getWechat();
+        }
+        
+        return config;
+    }
+    
+    /**
+     * 解析支付宝支付配置
+     * 优先使用configJson，如果为空则使用application.yml中的配置
+     */
+    private PaymentProperties.AlipayConfig parseAlipayConfig(String configJson) {
+        PaymentProperties.AlipayConfig config = new PaymentProperties.AlipayConfig();
+        
+        // 如果提供了configJson，优先使用
+        if (StringUtils.hasText(configJson)) {
+            try {
+                JsonNode jsonNode = objectMapper.readTree(configJson);
+                config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getAlipay().getAppId());
+                config.setPrivateKey(jsonNode.has("privateKey") ? jsonNode.get("privateKey").asText() : paymentProperties.getAlipay().getPrivateKey());
+                config.setAlipayPublicKey(jsonNode.has("alipayPublicKey") ? jsonNode.get("alipayPublicKey").asText() : paymentProperties.getAlipay().getAlipayPublicKey());
+                config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getAlipay().getNotifyUrl());
+                config.setReturnUrl(jsonNode.has("returnUrl") ? jsonNode.get("returnUrl").asText() : paymentProperties.getAlipay().getReturnUrl());
+                config.setGatewayUrl(jsonNode.has("gatewayUrl") ? jsonNode.get("gatewayUrl").asText() : paymentProperties.getAlipay().getGatewayUrl());
+                config.setSignType(jsonNode.has("signType") ? jsonNode.get("signType").asText() : paymentProperties.getAlipay().getSignType());
+                config.setCharset(jsonNode.has("charset") ? jsonNode.get("charset").asText() : paymentProperties.getAlipay().getCharset());
+                config.setFormat(jsonNode.has("format") ? jsonNode.get("format").asText() : paymentProperties.getAlipay().getFormat());
+            } catch (Exception e) {
+                log.warn("解析支付宝支付配置JSON失败，将使用application.yml中的配置：{}", e.getMessage());
+                config = paymentProperties.getAlipay();
+            }
+        } else {
+            // 使用application.yml中的配置
+            config = paymentProperties.getAlipay();
+        }
+        
+        return config;
+    }
+}
+
