@@ -88,6 +88,45 @@ public class SiteService extends ServiceImpl<SiteMapper, Site> {
     }
     
     /**
+     * 更新站点信息
+     *
+     * @param id 站点ID
+     * @param site 站点信息
+     * @return 更新后的站点
+     */
+    @Transactional
+    public Site updateSite(Long id, Site site) {
+        Site existing = getSiteById(id);
+        
+        // 更新域名
+        if (site.getDomain() != null && !site.getDomain().isEmpty() && !site.getDomain().equals(existing.getDomain())) {
+            // 检查域名是否已存在
+            LambdaQueryWrapper<Site> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(Site::getDomain, site.getDomain());
+            wrapper.ne(Site::getId, id);
+            wrapper.eq(Site::getDeleted, 0);
+            if (siteMapper.selectCount(wrapper) > 0) {
+                throw new RuntimeException("域名已存在");
+            }
+            existing.setDomain(site.getDomain());
+        }
+        
+        // 更新使用手册
+        if (site.getManual() != null) {
+            existing.setManual(site.getManual());
+        }
+        
+        // 更新描述
+        if (site.getDescription() != null) {
+            existing.setDescription(site.getDescription());
+        }
+
+        siteMapper.updateById(existing);
+        siteCacheService.refreshCache();
+        return existing;
+    }
+
+    /**
      * 更新站点域名（只能修改域名）
      * 
      * @param id 站点ID
@@ -127,61 +166,61 @@ public class SiteService extends ServiceImpl<SiteMapper, Site> {
         return existing;
     }
     
-    /**
-     * 更新站点（保留用于其他场景，站点管理页面不使用）
-     * 
-     * @param id 站点ID
-     * @param site 站点信息
-     * @return 更新后的站点
-     */
-    @Transactional
-    public Site updateSite(Long id, Site site) {
-        Site existing = getSiteById(id);
-        
-        // 如果域名改变，检查新域名是否已存在
-        if (site.getDomain() != null && !site.getDomain().equals(existing.getDomain())) {
-            LambdaQueryWrapper<Site> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(Site::getDomain, site.getDomain());
-            wrapper.ne(Site::getId, id);
-            wrapper.eq(Site::getDeleted, 0);
-            Site duplicate = siteMapper.selectOne(wrapper);
-            if (duplicate != null) {
-                throw new RuntimeException("域名已被其他站点使用");
-            }
-            existing.setDomain(site.getDomain());
-        }
-        
-        // 如果代码改变，检查新代码是否已存在
-        if (site.getCode() != null && !site.getCode().equals(existing.getCode())) {
-            LambdaQueryWrapper<Site> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(Site::getCode, site.getCode());
-            wrapper.ne(Site::getId, id);
-            wrapper.eq(Site::getDeleted, 0);
-            Site duplicate = siteMapper.selectOne(wrapper);
-            if (duplicate != null) {
-                throw new RuntimeException("站点代码已被其他站点使用");
-            }
-            existing.setCode(site.getCode());
-        }
-        
-        // 更新其他字段
-        if (site.getName() != null) {
-            existing.setName(site.getName());
-        }
-        if (site.getStatus() != null) {
-            existing.setStatus(site.getStatus());
-        }
-        if (site.getDescription() != null) {
-            existing.setDescription(site.getDescription());
-        }
-        
-        siteMapper.updateById(existing);
-        
-        // 刷新缓存
-        siteCacheService.refreshCache();
-        
-        return existing;
-    }
+//    /**
+//     * 更新站点（保留用于其他场景，站点管理页面不使用）
+//     *
+//     * @param id 站点ID
+//     * @param site 站点信息
+//     * @return 更新后的站点
+//     */
+//    @Transactional
+//    public Site updateSite(Long id, Site site) {
+//        Site existing = getSiteById(id);
+//
+//        // 如果域名改变，检查新域名是否已存在
+//        if (site.getDomain() != null && !site.getDomain().equals(existing.getDomain())) {
+//            LambdaQueryWrapper<Site> wrapper = new LambdaQueryWrapper<>();
+//            wrapper.eq(Site::getDomain, site.getDomain());
+//            wrapper.ne(Site::getId, id);
+//            wrapper.eq(Site::getDeleted, 0);
+//            Site duplicate = siteMapper.selectOne(wrapper);
+//            if (duplicate != null) {
+//                throw new RuntimeException("域名已被其他站点使用");
+//            }
+//            existing.setDomain(site.getDomain());
+//        }
+//
+//        // 如果代码改变，检查新代码是否已存在
+//        if (site.getCode() != null && !site.getCode().equals(existing.getCode())) {
+//            LambdaQueryWrapper<Site> wrapper = new LambdaQueryWrapper<>();
+//            wrapper.eq(Site::getCode, site.getCode());
+//            wrapper.ne(Site::getId, id);
+//            wrapper.eq(Site::getDeleted, 0);
+//            Site duplicate = siteMapper.selectOne(wrapper);
+//            if (duplicate != null) {
+//                throw new RuntimeException("站点代码已被其他站点使用");
+//            }
+//            existing.setCode(site.getCode());
+//        }
+//
+//        // 更新其他字段
+//        if (site.getName() != null) {
+//            existing.setName(site.getName());
+//        }
+//        if (site.getStatus() != null) {
+//            existing.setStatus(site.getStatus());
+//        }
+//        if (site.getDescription() != null) {
+//            existing.setDescription(site.getDescription());
+//        }
+//
+//        siteMapper.updateById(existing);
+//
+//        // 刷新缓存
+//        siteCacheService.refreshCache();
+//
+//        return existing;
+//    }
     
     /**
      * 删除站点（逻辑删除）

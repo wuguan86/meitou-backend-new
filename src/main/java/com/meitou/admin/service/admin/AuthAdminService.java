@@ -4,7 +4,11 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.meitou.admin.dto.LoginRequest;
 import com.meitou.admin.dto.LoginResponse;
 import com.meitou.admin.entity.BackendAccount;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.BackendAccountMapper;
+import com.meitou.admin.service.common.LoginAttemptService;
+import com.meitou.admin.util.TokenUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -21,6 +25,7 @@ public class AuthAdminService {
     
     private final BackendAccountMapper accountMapper; // 账号Mapper
     private final BCryptPasswordEncoder passwordEncoder; // 密码编码器（通过依赖注入）
+    private final LoginAttemptService loginAttemptService;
     
     /**
      * 登录
@@ -29,6 +34,11 @@ public class AuthAdminService {
      * @return 登录响应（包含Token）
      */
     public LoginResponse login(LoginRequest request) {
+        // 检查锁定
+        if (loginAttemptService.isLocked(request.getAccount())) {
+            throw new BusinessException(ErrorCode.ACCOUNT_LOCKED);
+        }
+
         // 查询账号
         LambdaQueryWrapper<BackendAccount> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(BackendAccount::getEmail, request.getAccount());
@@ -36,25 +46,29 @@ public class AuthAdminService {
         BackendAccount account = accountMapper.selectOne(wrapper);
         
         if (account == null) {
-            throw new RuntimeException("账号不存在");
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND);
         }
         
         // 验证密码
         if (!passwordEncoder.matches(request.getPassword(), account.getPassword())) {
-            throw new RuntimeException("密码错误");
+            loginAttemptService.loginFailed(request.getAccount());
+            throw new BusinessException(ErrorCode.PASSWORD_ERROR);
         }
         
+        // 登录成功
+        loginAttemptService.loginSucceeded(request.getAccount());
+
         // 检查账号状态
         if (!"active".equals(account.getStatus())) {
-            throw new RuntimeException("账号已被锁定");
+            throw new BusinessException(ErrorCode.ACCOUNT_DISABLED);
         }
         
         // 更新最后登录时间
         account.setLastLogin(LocalDateTime.now());
         accountMapper.updateById(account);
         
-        // 生成简单Token（实际项目中应使用JWT）
-        String token = generateSimpleToken(account.getId());
+        // 生成 JWT Token (类型为 admin)
+        String token = TokenUtil.generateToken(account.getId(), "admin");
         
         // 构建响应
         LoginResponse response = new LoginResponse();
@@ -72,19 +86,7 @@ public class AuthAdminService {
      * @return 是否有效
      */
     public boolean checkToken(String token) {
-        // 简单实现：实际项目中应验证JWT Token
-        return token != null && !token.isEmpty();
-    }
-    
-    /**
-     * 生成简单Token（实际项目中应使用JWT）
-     * 
-     * @param accountId 账号ID
-     * @return Token
-     */
-    private String generateSimpleToken(Long accountId) {
-        // 简单实现：实际项目中应使用JWT生成Token
-        return "token_" + accountId + "_" + System.currentTimeMillis();
+        // 验证 Token 是否有效且类型为 admin
+        return TokenUtil.isValidToken(token) && "admin".equals(TokenUtil.getUserTypeFromToken(token));
     }
 }
-

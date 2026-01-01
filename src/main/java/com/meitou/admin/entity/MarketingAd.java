@@ -1,16 +1,18 @@
 package com.meitou.admin.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 营销广告实体类
  * 对应数据库表：marketing_ads
  */
 @Data
-@TableName("marketing_ads")
+@TableName(value = "marketing_ads", autoResultMap = true)
 public class MarketingAd {
     
     /**
@@ -68,7 +70,8 @@ public class MarketingAd {
     /**
      * 关联标签（JSON格式）
      */
-    private String tags;
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private List<String> tags;
     
     /**
      * 是否激活：0-否，1-是

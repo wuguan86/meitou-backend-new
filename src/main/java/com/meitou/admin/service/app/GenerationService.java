@@ -1,5 +1,7 @@
 package com.meitou.admin.service.app;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meitou.admin.dto.app.ImageGenerationResponse;
@@ -16,6 +18,8 @@ import com.meitou.admin.entity.User;
 import com.meitou.admin.mapper.GenerationRecordMapper;
 import com.meitou.admin.mapper.UserMapper;
 import com.meitou.admin.service.admin.ApiPlatformService;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.*;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -36,6 +40,7 @@ public class GenerationService {
     private final ApiPlatformService apiPlatformService;
     private final GenerationRecordMapper generationRecordMapper;
     private final UserMapper userMapper;
+    private final com.meitou.admin.service.common.AliyunOssService aliyunOssService;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -44,15 +49,17 @@ public class GenerationService {
      */
     public GenerationService(ApiPlatformService apiPlatformService, 
                              GenerationRecordMapper generationRecordMapper,
-                             UserMapper userMapper) {
+                             UserMapper userMapper,
+                             com.meitou.admin.service.common.AliyunOssService aliyunOssService) {
         this.apiPlatformService = apiPlatformService;
         this.generationRecordMapper = generationRecordMapper;
         this.userMapper = userMapper;
+        this.aliyunOssService = aliyunOssService;
         
         // 配置RestTemplate的超时时间
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(10000); // 连接超时：10秒
-        factory.setReadTimeout(120000); // 读取超时：120秒（流式响应可能需要较长时间，图片生成通常需要30-60秒）
+        factory.setConnectTimeout(30000); // 连接超时：30秒
+        factory.setReadTimeout(300000); // 读取超时：300秒
         this.restTemplate = new RestTemplate(factory);
     }
     
@@ -68,24 +75,24 @@ public class GenerationService {
         // 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 根据类型查找对应的API平台（type=txt2img）
         ApiPlatform platform = findPlatformByType("txt2img", null);
         if (platform == null) {
-            throw new RuntimeException("文生图平台未配置，请在后台API接口管理中配置类型为'文生图'的平台");
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "文生图平台未配置，请在后台API接口管理中配置类型为'文生图'的平台");
         }
         
         // 检查apiKey是否有效（解密后不为null）
         if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+            throw new BusinessException(ErrorCode.API_KEY_ERROR);
         }
         
         // 获取文生图接口配置
         ApiInterface txt2imgInterface = findTextToImageInterface(platform.getId());
         if (txt2imgInterface == null) {
-            throw new RuntimeException("文生图接口未配置");
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "文生图接口未配置");
         }
         
         try {
@@ -98,6 +105,19 @@ public class GenerationService {
             // 解析响应（传递responseMode以支持不同格式）
             List<String> imageUrls = parseImageUrls(responseJson, txt2imgInterface.getResponseMode());
             
+            // 上传图片到OSS并替换URL
+            List<String> ossUrls = new ArrayList<>();
+            for (String url : imageUrls) {
+                // 如果已经是OSS链接（可能是API直接返回了OSS链接），则不重复上传
+                if (url.contains("aliyuncs.com") || url.contains("myqcloud.com")) {
+                    ossUrls.add(url);
+                } else {
+                    String ossUrl = aliyunOssService.uploadFromUrl(url, "images/");
+                    ossUrls.add(ossUrl);
+                }
+            }
+            imageUrls = ossUrls;
+            
             // 保存生成记录
             GenerationRecord record = new GenerationRecord();
             record.setUserId(userId);
@@ -109,6 +129,18 @@ public class GenerationService {
             record.setSiteId(SiteContext.getSiteId());
             record.setContentUrl(String.join(",", imageUrls));
             record.setCost(calculateCost(request.getQuantity(), "txt2img"));
+            
+            // 设置新字段
+            record.setFileType("image");
+            if (!imageUrls.isEmpty()) {
+                record.setThumbnailUrl(imageUrls.get(0)); // 图片的缩略图就是原图
+            }
+            try {
+                record.setGenerationParams(objectMapper.writeValueAsString(request));
+            } catch (Exception e) {
+                log.warn("序列化生成参数失败", e);
+            }
+            
             generationRecordMapper.insert(record);
             
             // 构建响应
@@ -131,12 +163,18 @@ public class GenerationService {
                 record.setPrompt(request.getPrompt());
                 record.setStatus("failed");
                 record.setSiteId(SiteContext.getSiteId());
+                record.setFileType("image");
+                try {
+                    record.setGenerationParams(objectMapper.writeValueAsString(request));
+                } catch (Exception ex) {
+                    // ignore
+                }
                 generationRecordMapper.insert(record);
             } catch (Exception ex) {
                 log.error("保存失败记录时出错：{}", ex.getMessage());
             }
             
-            throw new RuntimeException("文生图失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "文生图失败：" + e.getMessage());
         }
     }
     
@@ -152,24 +190,24 @@ public class GenerationService {
         // 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 根据类型查找对应的API平台（type=img2img）
         ApiPlatform platform = findPlatformByType("img2img", null);
         if (platform == null) {
-            throw new RuntimeException("图生图平台未配置，请在后台API接口管理中配置类型为'图生图'的平台");
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "图生图平台未配置，请在后台API接口管理中配置类型为'图生图'的平台");
         }
         
         // 检查apiKey是否有效（解密后不为null）
         if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+            throw new BusinessException(ErrorCode.API_KEY_ERROR);
         }
         
         // 获取图生图接口配置
         ApiInterface img2imgInterface = findImageToImageInterface(platform.getId());
         if (img2imgInterface == null) {
-            throw new RuntimeException("图生图接口未配置");
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "图生图接口未配置");
         }
         
         try {
@@ -185,6 +223,18 @@ public class GenerationService {
             // 解析响应（传递responseMode以支持不同格式）
             List<String> imageUrls = parseImageUrls(responseJson, img2imgInterface.getResponseMode());
             
+            // 上传图片到OSS并替换URL
+            List<String> ossUrls = new ArrayList<>();
+            for (String url : imageUrls) {
+                if (url.contains("aliyuncs.com") || url.contains("myqcloud.com")) {
+                    ossUrls.add(url);
+                } else {
+                    String ossUrl = aliyunOssService.uploadFromUrl(url, "images/");
+                    ossUrls.add(ossUrl);
+                }
+            }
+            imageUrls = ossUrls;
+            
             // 保存生成记录
             GenerationRecord record = new GenerationRecord();
             record.setUserId(userId);
@@ -196,6 +246,18 @@ public class GenerationService {
             record.setSiteId(SiteContext.getSiteId());
             record.setContentUrl(String.join(",", imageUrls));
             record.setCost(calculateCost(request.getQuantity(), "img2img"));
+            
+            // 设置新字段
+            record.setFileType("image");
+            if (!imageUrls.isEmpty()) {
+                record.setThumbnailUrl(imageUrls.get(0));
+            }
+            try {
+                record.setGenerationParams(objectMapper.writeValueAsString(request));
+            } catch (Exception e) {
+                log.warn("序列化生成参数失败", e);
+            }
+            
             generationRecordMapper.insert(record);
             
             // 构建响应
@@ -218,15 +280,426 @@ public class GenerationService {
                 record.setPrompt(request.getPrompt());
                 record.setStatus("failed");
                 record.setSiteId(SiteContext.getSiteId());
+                record.setFileType("image");
+                try {
+                    record.setGenerationParams(objectMapper.writeValueAsString(request));
+                } catch (Exception ex) {
+                    // ignore
+                }
                 generationRecordMapper.insert(record);
             } catch (Exception ex) {
                 log.error("保存失败记录时出错：{}", ex.getMessage());
             }
             
-            throw new RuntimeException("图生图失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "图生图失败：" + e.getMessage());
         }
     }
     
+    /**
+     * 文生视频
+     */
+    @Transactional
+    public VideoGenerationResponse generateTextToVideo(TextToVideoRequest request, Long userId) {
+        // 获取用户信息
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        
+        ApiPlatform platform = findPlatformByType("txt2video", null);
+        if (platform == null) {
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "文生视频平台未配置");
+        }
+        
+        ApiInterface txt2videoInterface = findTextToImageInterface(platform.getId()); // 复用
+        if (txt2videoInterface == null) {
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "文生视频接口未配置");
+        }
+        
+        try {
+            Map<String, Object> apiRequest = buildTextToVideoRequest(request, platform);
+            String responseJson = callApi(txt2videoInterface, platform, apiRequest);
+            String videoUrl = parseVideoUrl(responseJson);
+            
+            // 上传视频到OSS
+            String ossUrl;
+            if (videoUrl.contains("aliyuncs.com") || videoUrl.contains("myqcloud.com")) {
+                ossUrl = videoUrl;
+            } else {
+                ossUrl = aliyunOssService.uploadFromUrl(videoUrl, "videos/");
+            }
+            
+            // 保存记录
+            GenerationRecord record = new GenerationRecord();
+            record.setUserId(userId);
+            record.setUsername(user.getUsername());
+            record.setType("txt2video");
+            record.setModel(request.getModel());
+            record.setPrompt(request.getPrompt());
+            record.setStatus("success");
+            record.setSiteId(SiteContext.getSiteId());
+            record.setContentUrl(ossUrl);
+            record.setCost(calculateCost(1, "txt2video")); // 视频通常较贵
+            
+            record.setFileType("video");
+            // 视频缩略图暂时使用默认或不设置，或者如果有能力截取
+            // record.setThumbnailUrl(ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_0,h_0,m_fast"); // 阿里云OSS视频截帧参数
+            // 假设使用了阿里云OSS，可以直接添加截帧参数作为缩略图
+            if (ossUrl.contains("aliyuncs.com")) {
+                record.setThumbnailUrl(ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast");
+            }
+
+            try {
+                record.setGenerationParams(objectMapper.writeValueAsString(request));
+            } catch (Exception e) {
+                log.warn("序列化生成参数失败", e);
+            }
+            
+            generationRecordMapper.insert(record);
+            
+            VideoGenerationResponse response = new VideoGenerationResponse();
+            response.setVideoUrl(ossUrl);
+            response.setStatus("success");
+            return response;
+            
+        } catch (Exception e) {
+            log.error("文生视频失败：{}", e.getMessage(), e);
+            // 保存失败记录
+            try {
+                GenerationRecord record = new GenerationRecord();
+                record.setUserId(userId);
+                record.setUsername(user.getUsername());
+                record.setType("txt2video");
+                record.setModel(request.getModel());
+                record.setPrompt(request.getPrompt());
+                record.setStatus("failed");
+                record.setSiteId(SiteContext.getSiteId());
+                record.setFileType("video");
+                try {
+                    record.setGenerationParams(objectMapper.writeValueAsString(request));
+                } catch (Exception ex) {}
+                generationRecordMapper.insert(record);
+            } catch (Exception ex) {}
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "文生视频失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * 图生视频
+     */
+    @Transactional
+    public VideoGenerationResponse generateImageToVideo(ImageToVideoRequest request, Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        
+        ApiPlatform platform = findPlatformByType("img2video", null);
+        if (platform == null) {
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "图生视频平台未配置");
+        }
+        
+        ApiInterface img2videoInterface = findImageToImageInterface(platform.getId()); // 复用
+        if (img2videoInterface == null) {
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "图生视频接口未配置");
+        }
+        
+        try {
+            Map<String, Object> apiRequest = buildImageToVideoRequest(request, platform);
+            String responseJson = callApi(img2videoInterface, platform, apiRequest);
+            String videoUrl = parseVideoUrl(responseJson);
+            
+            String ossUrl;
+            if (videoUrl.contains("aliyuncs.com") || videoUrl.contains("myqcloud.com")) {
+                ossUrl = videoUrl;
+            } else {
+                ossUrl = aliyunOssService.uploadFromUrl(videoUrl, "videos/");
+            }
+            
+            GenerationRecord record = new GenerationRecord();
+            record.setUserId(userId);
+            record.setUsername(user.getUsername());
+            record.setType("img2video");
+            record.setModel(request.getModel());
+            record.setPrompt(request.getPrompt());
+            record.setStatus("success");
+            record.setSiteId(SiteContext.getSiteId());
+            record.setContentUrl(ossUrl);
+            record.setCost(calculateCost(1, "img2video"));
+            
+            record.setFileType("video");
+            // 设置缩略图为参考图，或者OSS截帧
+            if (request.getImage() != null) {
+                record.setThumbnailUrl(request.getImage());
+            } else if (ossUrl.contains("aliyuncs.com")) {
+                record.setThumbnailUrl(ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast");
+            }
+
+            try {
+                record.setGenerationParams(objectMapper.writeValueAsString(request));
+            } catch (Exception e) {
+                log.warn("序列化生成参数失败", e);
+            }
+            
+            generationRecordMapper.insert(record);
+            
+            VideoGenerationResponse response = new VideoGenerationResponse();
+            response.setVideoUrl(ossUrl);
+            response.setStatus("success");
+            return response;
+            
+        } catch (Exception e) {
+            log.error("图生视频失败：{}", e.getMessage(), e);
+            try {
+                GenerationRecord record = new GenerationRecord();
+                record.setUserId(userId);
+                record.setUsername(user.getUsername());
+                record.setType("img2video");
+                record.setModel(request.getModel());
+                record.setPrompt(request.getPrompt());
+                record.setStatus("failed");
+                record.setSiteId(SiteContext.getSiteId());
+                record.setFileType("video");
+                try {
+                    record.setGenerationParams(objectMapper.writeValueAsString(request));
+                } catch (Exception ex) {}
+                generationRecordMapper.insert(record);
+            } catch (Exception ex) {}
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "图生视频失败：" + e.getMessage());
+        }
+    }
+
+
+    /**
+     * 获取用户生成记录
+     * 
+     * @param userId 用户ID
+     * @param page 页码
+     * @param size 每页数量
+     * @param type 类型筛选 (可选)
+     * @return 记录分页
+     */
+    public Page<GenerationRecord> getUserGenerationRecords(Long userId, int page, int size, String type) {
+        Page<GenerationRecord> pageParam = new Page<>(page, size);
+        QueryWrapper<GenerationRecord> queryWrapper = new QueryWrapper<>();
+        queryWrapper.eq("user_id", userId);
+        if (type != null && !type.isEmpty() && !"all".equals(type)) {
+            // 前端传的是 'image' 或 'video'，数据库里存的是 'txt2img', 'img2img' (image) 或 'txt2video', 'img2video' (video)
+            // 或者使用新加的 file_type 字段
+            if ("image".equals(type)) {
+                queryWrapper.eq("file_type", "image");
+            } else if ("video".equals(type)) {
+                queryWrapper.eq("file_type", "video");
+            } else {
+                // 如果是其他具体类型
+                queryWrapper.eq("type", type);
+            }
+        }
+        queryWrapper.orderByDesc("created_at");
+        return generationRecordMapper.selectPage(pageParam, queryWrapper);
+    }
+
+    /**
+     * 删除生成记录
+     *
+     * @param id 记录ID
+     * @param userId 用户ID
+     */
+    public void deleteGenerationRecord(Long id, Long userId) {
+        GenerationRecord record = generationRecordMapper.selectById(id);
+        if (record == null) {
+            throw new BusinessException(ErrorCode.RECORD_NOT_FOUND);
+        }
+        if (!record.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.PERMISSION_DENIED.getCode(), "无权删除此记录");
+        }
+        generationRecordMapper.deleteById(id);
+    }
+
+    /**
+     * 发布生成记录
+     *
+     * @param id 记录ID
+     * @param userId 用户ID
+     */
+    public void publishGenerationRecord(Long id, Long userId) {
+        GenerationRecord record = generationRecordMapper.selectById(id);
+        if (record == null) {
+            throw new BusinessException(ErrorCode.RECORD_NOT_FOUND);
+        }
+        if (!record.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.PERMISSION_DENIED.getCode(), "无权操作此记录");
+        }
+        record.setIsPublish("1");
+        generationRecordMapper.updateById(record);
+    }
+
+    private Map<String, Object> buildTextToVideoRequest(TextToVideoRequest request, ApiPlatform platform) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("prompt", request.getPrompt());
+        if (request.getModel() != null) params.put("model", request.getModel());
+        // 更多参数处理...
+        if (request.getDuration() != null) params.put("duration", request.getDuration());
+        if (request.getResolution() != null) params.put("resolution", request.getResolution());
+        if (request.getAspectRatio() != null) params.put("aspect_ratio", request.getAspectRatio());
+        return params;
+    }
+
+    private Map<String, Object> buildImageToVideoRequest(ImageToVideoRequest request, ApiPlatform platform) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("prompt", request.getPrompt());
+        
+        // 优先使用明确指定的参数
+        if (request.getUrls() != null && !request.getUrls().isEmpty()) {
+            params.put("urls", request.getUrls());
+        } else {
+            // 默认使用首帧模式
+            String firstFrame = request.getFirstFrameUrl();
+            if (firstFrame == null || firstFrame.isEmpty()) {
+                firstFrame = request.getImage();
+            }
+            params.put("firstFrameUrl", firstFrame);
+            
+            if (request.getLastFrameUrl() != null && !request.getLastFrameUrl().isEmpty()) {
+                params.put("lastFrameUrl", request.getLastFrameUrl());
+            }
+        }
+
+        if (request.getModel() != null) params.put("model", request.getModel());
+        if (request.getDuration() != null) params.put("duration", request.getDuration());
+        if (request.getResolution() != null) params.put("resolution", request.getResolution());
+        if (request.getAspectRatio() != null) params.put("aspectRatio", request.getAspectRatio());
+        if (request.getWebHook() != null) params.put("webHook", request.getWebHook());
+        if (request.getShutProgress() != null) params.put("shutProgress", request.getShutProgress());
+        
+        return params;
+    }
+
+    private String parseVideoUrl(String responseJson) {
+        try {
+            // 自动检测响应格式：如果响应以 "data: " 开头，则视为SSE格式
+            if (responseJson != null && responseJson.trim().startsWith("data:")) {
+                return parseVideoSseResponse(responseJson);
+            }
+
+            JsonNode root = objectMapper.readTree(responseJson);
+            if (root.has("video_url")) return root.get("video_url").asText();
+            if (root.has("url")) return root.get("url").asText();
+            if (root.has("data") && root.get("data").has("url")) return root.get("data").get("url").asText();
+            // 更多解析逻辑...
+            
+            // 尝试通用解析
+            if (root.has("results") && root.get("results").isArray()) {
+                JsonNode first = root.get("results").get(0);
+                if (first.has("url")) return first.get("url").asText();
+                if (first.has("video_url")) return first.get("video_url").asText();
+            }
+            
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "无法解析视频URL");
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "解析视频响应失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 解析视频SSE格式的流式响应
+     */
+    private String parseVideoSseResponse(String sseResponse) {
+        String videoUrl = null;
+        JsonNode lastDataNode = null;
+        String lastStatus = null;
+        
+        try {
+            // 按行分割SSE数据
+            String[] lines = sseResponse.split("\n");
+            
+            for (String line : lines) {
+                line = line.trim();
+                // 跳过空行
+                if (line.isEmpty()) {
+                    continue;
+                }
+                
+                // 检查是否是data行
+                if (line.startsWith("data: ")) {
+                    String jsonData = line.substring(6); // 移除 "data: " 前缀
+                    
+                    try {
+                        // 解析JSON数据
+                        JsonNode dataNode = objectMapper.readTree(jsonData);
+                        lastDataNode = dataNode;
+                        
+                        // 检查状态字段
+                        if (dataNode.has("status")) {
+                            lastStatus = dataNode.get("status").asText();
+                        }
+                        
+                        // 尝试提取视频URL
+                        String url = extractVideoUrlFromNode(dataNode);
+                        if (url != null && !url.isEmpty()) {
+                            videoUrl = url;
+                        }
+                        
+                    } catch (Exception e) {
+                        // 忽略解析失败的行，继续处理下一行
+                        log.debug("解析SSE数据行失败：{}", e.getMessage());
+                    }
+                }
+            }
+            
+            // 如果已经找到URL，直接返回
+            if (videoUrl != null) {
+                return videoUrl;
+            }
+            
+            // 如果没有找到视频URL，但最后一个状态是completed/success/succeeded，尝试从最后一个数据节点提取
+            if (lastDataNode != null && 
+                ("completed".equals(lastStatus) || "success".equals(lastStatus) || "succeeded".equals(lastStatus))) {
+                String url = extractVideoUrlFromNode(lastDataNode);
+                if (url != null && !url.isEmpty()) {
+                    return url;
+                }
+            }
+            
+            // 如果还是没有找到，检查是否有错误信息
+            if (lastDataNode != null) {
+                if (lastDataNode.has("error") && !lastDataNode.get("error").asText().isEmpty()) {
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回错误：" + lastDataNode.get("error").asText());
+                }
+                if (lastDataNode.has("failure_reason") && !lastDataNode.get("failure_reason").asText().isEmpty()) {
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回失败原因：" + lastDataNode.get("failure_reason").asText());
+                }
+                // 如果状态是running，但没有URL
+                if ("running".equals(lastStatus)) {
+                     throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "视频生成任务仍在处理中（状态：running），未返回结果URL");
+                }
+            }
+            
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "未找到生成的视频URL，响应状态：" + lastStatus);
+            
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("解析SSE响应失败：{}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "解析SSE响应失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * 从JsonNode中提取视频URL
+     */
+    private String extractVideoUrlFromNode(JsonNode node) {
+        if (node.has("video_url") && !node.get("video_url").asText().isEmpty()) return node.get("video_url").asText();
+        if (node.has("url") && !node.get("url").asText().isEmpty()) return node.get("url").asText();
+        if (node.has("data") && node.get("data").has("url")) return node.get("data").get("url").asText();
+        if (node.has("results") && node.get("results").isArray()) {
+            JsonNode first = node.get("results").get(0);
+            if (first.has("url")) return first.get("url").asText();
+            if (first.has("video_url")) return first.get("video_url").asText();
+        }
+        return null;
+    }
+
     /**
      * 根据类型查找API平台（apiKey已解密）
      * 
@@ -319,7 +792,7 @@ public class GenerationService {
                 : request.getImage());
         } else {
             log.warn("图生图参考图片参数为空！");
-            throw new RuntimeException("参考图片不能为空");
+            throw new BusinessException(ErrorCode.REFERENCE_IMAGE_REQUIRED);
         }
         
         // 处理多图模式：根据模式添加额外的参考图片
@@ -525,7 +998,7 @@ public class GenerationService {
             );
             
             if (!response.getStatusCode().is2xxSuccessful()) {
-                throw new RuntimeException("API调用失败，状态码：" + response.getStatusCode());
+                throw new BusinessException(ErrorCode.API_CALL_FAILED.getCode(), "API调用失败，状态码：" + response.getStatusCode());
             }
             
             log.debug("API响应: {}", response.getBody());
@@ -533,7 +1006,7 @@ public class GenerationService {
             
         } catch (Exception e) {
             log.error("调用API平台接口失败：{}", e.getMessage(), e);
-            throw new RuntimeException("调用API平台接口失败：" + e.getMessage(), e);
+            throw new BusinessException(ErrorCode.API_CALL_FAILED.getCode(), "调用API平台接口失败：" + e.getMessage());
         }
     }
     
@@ -584,13 +1057,13 @@ public class GenerationService {
                     }
                     
                     log.error("API返回错误响应: code={}, msg={}", code, errorMsg);
-                    throw new RuntimeException(friendlyMsg);
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), friendlyMsg);
                 }
             }
             // 格式2: { "error": "错误消息" }
             else if (root.has("error")) {
                 String errorMsg = root.get("error").asText();
-                throw new RuntimeException("API返回错误：" + errorMsg);
+                throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回错误：" + errorMsg);
             }
             // 格式3: { "status": "error", "message": "错误消息" }
             else if (root.has("status")) {
@@ -602,7 +1075,7 @@ public class GenerationService {
                     } else if (root.has("msg")) {
                         errorMsg = root.get("msg").asText();
                     }
-                    throw new RuntimeException("API返回错误：" + errorMsg);
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回错误：" + errorMsg);
                 }
             }
             
@@ -748,10 +1221,10 @@ public class GenerationService {
             // 如果还是没有找到，检查是否有错误信息
             if (imageUrls.isEmpty() && lastDataNode != null) {
                 if (lastDataNode.has("error") && !lastDataNode.get("error").asText().isEmpty()) {
-                    throw new RuntimeException("API返回错误：" + lastDataNode.get("error").asText());
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回错误：" + lastDataNode.get("error").asText());
                 }
                 if (lastDataNode.has("failure_reason") && !lastDataNode.get("failure_reason").asText().isEmpty()) {
-                    throw new RuntimeException("API返回失败原因：" + lastDataNode.get("failure_reason").asText());
+                    throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "API返回失败原因：" + lastDataNode.get("failure_reason").asText());
                 }
                 // 如果状态是running，尝试从当前数据中提取URL（有些API会在running状态时也返回部分结果）
                 if ("running".equals(lastStatus) && lastDataNode != null) {
@@ -767,7 +1240,7 @@ public class GenerationService {
                     }
                     // 如果还是没有找到URL，抛出异常
                     if (imageUrls.isEmpty()) {
-                        throw new RuntimeException("图片生成任务仍在处理中（状态：running），请稍后查询结果。如需实时获取结果，建议使用轮询或Webhook方式");
+                        throw new BusinessException(ErrorCode.API_RESPONSE_ERROR.getCode(), "图片生成任务仍在处理中（状态：running），请稍后查询结果。如需实时获取结果，建议使用轮询或Webhook方式");
                     }
                 }
             }
@@ -776,11 +1249,11 @@ public class GenerationService {
             throw e;
         } catch (Exception e) {
             log.error("解析SSE响应失败：{}", e.getMessage(), e);
-            throw new RuntimeException("解析SSE响应失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "解析SSE响应失败：" + e.getMessage());
         }
         
         if (imageUrls.isEmpty()) {
-            throw new RuntimeException("未找到生成的图片URL，响应状态：" + lastStatus);
+            throw new BusinessException(ErrorCode.PARSE_RESPONSE_FAILED.getCode(), "未找到生成的图片URL，响应状态：" + lastStatus);
         }
         
         return imageUrls;
@@ -793,172 +1266,172 @@ public class GenerationService {
      * @param userId 用户ID
      * @return 生成响应
      */
-    @Transactional
-    public VideoGenerationResponse generateTextToVideo(TextToVideoRequest request, Long userId) {
-        // 获取用户信息
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new RuntimeException("用户不存在");
-        }
-        
-        // 根据类型查找对应的API平台（type=txt2video）
-        ApiPlatform platform = findPlatformByType("txt2video", null);
-        if (platform == null) {
-            throw new RuntimeException("文生视频平台未配置，请在后台API接口管理中配置类型为'文生视频'的平台");
-        }
-        
-        // 检查apiKey是否有效
-        if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
-        }
-        
-        // 获取文生视频接口配置
-        ApiInterface txt2videoInterface = findTextToImageInterface(platform.getId()); // 复用查找接口的方法
-        if (txt2videoInterface == null) {
-            throw new RuntimeException("文生视频接口未配置");
-        }
-        
-        try {
-            // 构建请求参数
-            Map<String, Object> apiRequest = buildTextToVideoRequest(request, platform);
-            
-            // 调用API
-            String responseJson = callApi(txt2videoInterface, platform, apiRequest);
-            
-            // 解析响应（支持多种响应格式）
-            VideoResponseInfo videoInfo = parseVideoResponse(responseJson, txt2videoInterface.getResponseMode());
-            
-            // 构建响应
-            VideoGenerationResponse response = new VideoGenerationResponse();
-            
-            // 如果webHook为"-1"，会立即返回一个id用于轮询
-            if ("-1".equals(request.getWebHook()) && videoInfo.getTaskId() != null) {
-                // 返回任务ID，用于后续轮询
-                response.setTaskId(videoInfo.getTaskId());
-                response.setStatus("processing");
-                
-                // 保存处理中记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("txt2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("processing");
-                record.setSiteId(SiteContext.getSiteId());
-                generationRecordMapper.insert(record);
-                
-                return response;
-            }
-            
-            // 检查状态
-            String status = videoInfo.getStatus();
-            if ("running".equals(status)) {
-                // 任务进行中，返回任务ID
-                response.setTaskId(videoInfo.getTaskId());
-                response.setStatus("processing");
-                
-                // 保存处理中记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("txt2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("processing");
-                record.setSiteId(SiteContext.getSiteId());
-                generationRecordMapper.insert(record);
-            } else if ("succeeded".equals(status) || "success".equals(status)) {
-                // 任务成功，保存视频URL
-                String videoUrl = videoInfo.getVideoUrl();
-                if (videoUrl == null || videoUrl.isEmpty()) {
-                    throw new RuntimeException("视频生成成功但未返回视频URL");
-                }
-                
-                // 保存成功记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("txt2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("success");
-                record.setSiteId(SiteContext.getSiteId());
-                record.setContentUrl(videoUrl);
-                record.setCost(calculateCost(1, "txt2video"));
-                generationRecordMapper.insert(record);
-                
-                response.setVideoUrl(videoUrl);
-                response.setStatus("success");
-            } else if ("failed".equals(status)) {
-                // 任务失败
-                String errorMsg = videoInfo.getErrorMessage();
-                if (errorMsg == null || errorMsg.isEmpty()) {
-                    errorMsg = videoInfo.getFailureReason();
-                }
-                
-                // 检查是否是模型已下架的错误，如果是则提供更友好的提示
-                String friendlyErrorMsg = errorMsg;
-                if (errorMsg != null && (errorMsg.contains("下架") || errorMsg.contains("deprecated") || errorMsg.contains("veo3"))) {
-                    // 如果错误信息包含模型下架相关的关键词，提供更友好的提示
-                    if (errorMsg.contains("veo3") && !errorMsg.contains("veo3.1")) {
-                        friendlyErrorMsg = "您选择的模型（" + request.getModel() + "）已被官方下架，请使用 veo3.1-fast 或 veo3.1-pro 模型。原错误信息：" + errorMsg;
-                    }
-                }
-                
-                // 保存失败记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("txt2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("failed");
-                record.setSiteId(SiteContext.getSiteId());
-                generationRecordMapper.insert(record);
-                
-                // 抛出异常，使用特定的错误消息前缀以便在catch块中识别
-                throw new RuntimeException("VIDEO_GENERATION_FAILED:" + (friendlyErrorMsg != null ? friendlyErrorMsg : "未知错误"));
-            } else {
-                throw new RuntimeException("未知的视频生成状态：" + status);
-            }
-            
-            return response;
-            
-        } catch (Exception e) {
-            String errorMessage = e.getMessage();
-            // 检查是否是业务异常（已经保存了失败记录的异常）
-            // 通过检查异常消息是否以"VIDEO_GENERATION_FAILED:"开头来判断
-            boolean alreadySaved = errorMessage != null && errorMessage.startsWith("VIDEO_GENERATION_FAILED:");
-            
-            if (alreadySaved) {
-                // 业务异常已保存记录，只需记录日志，并提取原始错误消息
-                String originalError = errorMessage.substring("VIDEO_GENERATION_FAILED:".length());
-                log.error("文生视频失败：{}", originalError);
-                throw new RuntimeException("视频生成失败：" + originalError);
-            } else {
-                // 其他异常（如API调用失败等），记录错误日志并保存失败记录
-                log.error("文生视频失败：{}", errorMessage, e);
-                
-                // 保存失败记录
-                try {
-                    GenerationRecord record = new GenerationRecord();
-                    record.setUserId(userId);
-                    record.setUsername(user.getUsername());
-                    record.setType("txt2video");
-                    record.setModel(request.getModel());
-                    record.setPrompt(request.getPrompt());
-                    record.setStatus("failed");
-                    record.setSiteId(SiteContext.getSiteId());
-                    generationRecordMapper.insert(record);
-                } catch (Exception ex) {
-                    log.error("保存失败记录时出错：{}", ex.getMessage());
-                }
-                
-                throw new RuntimeException("文生视频失败：" + errorMessage);
-            }
-        }
-    }
+//    @Transactional
+//    public VideoGenerationResponse generateTextToVideo(TextToVideoRequest request, Long userId) {
+//        // 获取用户信息
+//        User user = userMapper.selectById(userId);
+//        if (user == null) {
+//            throw new RuntimeException("用户不存在");
+//        }
+//
+//        // 根据类型查找对应的API平台（type=txt2video）
+//        ApiPlatform platform = findPlatformByType("txt2video", null);
+//        if (platform == null) {
+//            throw new RuntimeException("文生视频平台未配置，请在后台API接口管理中配置类型为'文生视频'的平台");
+//        }
+//
+//        // 检查apiKey是否有效
+//        if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
+//            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+//        }
+//
+//        // 获取文生视频接口配置
+//        ApiInterface txt2videoInterface = findTextToImageInterface(platform.getId()); // 复用查找接口的方法
+//        if (txt2videoInterface == null) {
+//            throw new RuntimeException("文生视频接口未配置");
+//        }
+//
+//        try {
+//            // 构建请求参数
+//            Map<String, Object> apiRequest = buildTextToVideoRequest(request, platform);
+//
+//            // 调用API
+//            String responseJson = callApi(txt2videoInterface, platform, apiRequest);
+//
+//            // 解析响应（支持多种响应格式）
+//            VideoResponseInfo videoInfo = parseVideoResponse(responseJson, txt2videoInterface.getResponseMode());
+//
+//            // 构建响应
+//            VideoGenerationResponse response = new VideoGenerationResponse();
+//
+//            // 如果webHook为"-1"，会立即返回一个id用于轮询
+//            if ("-1".equals(request.getWebHook()) && videoInfo.getTaskId() != null) {
+//                // 返回任务ID，用于后续轮询
+//                response.setTaskId(videoInfo.getTaskId());
+//                response.setStatus("processing");
+//
+//                // 保存处理中记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("txt2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("processing");
+//                record.setSiteId(SiteContext.getSiteId());
+//                generationRecordMapper.insert(record);
+//
+//                return response;
+//            }
+//
+//            // 检查状态
+//            String status = videoInfo.getStatus();
+//            if ("running".equals(status)) {
+//                // 任务进行中，返回任务ID
+//                response.setTaskId(videoInfo.getTaskId());
+//                response.setStatus("processing");
+//
+//                // 保存处理中记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("txt2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("processing");
+//                record.setSiteId(SiteContext.getSiteId());
+//                generationRecordMapper.insert(record);
+//            } else if ("succeeded".equals(status) || "success".equals(status)) {
+//                // 任务成功，保存视频URL
+//                String videoUrl = videoInfo.getVideoUrl();
+//                if (videoUrl == null || videoUrl.isEmpty()) {
+//                    throw new RuntimeException("视频生成成功但未返回视频URL");
+//                }
+//
+//                // 保存成功记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("txt2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("success");
+//                record.setSiteId(SiteContext.getSiteId());
+//                record.setContentUrl(videoUrl);
+//                record.setCost(calculateCost(1, "txt2video"));
+//                generationRecordMapper.insert(record);
+//
+//                response.setVideoUrl(videoUrl);
+//                response.setStatus("success");
+//            } else if ("failed".equals(status)) {
+//                // 任务失败
+//                String errorMsg = videoInfo.getErrorMessage();
+//                if (errorMsg == null || errorMsg.isEmpty()) {
+//                    errorMsg = videoInfo.getFailureReason();
+//                }
+//
+//                // 检查是否是模型已下架的错误，如果是则提供更友好的提示
+//                String friendlyErrorMsg = errorMsg;
+//                if (errorMsg != null && (errorMsg.contains("下架") || errorMsg.contains("deprecated") || errorMsg.contains("veo3"))) {
+//                    // 如果错误信息包含模型下架相关的关键词，提供更友好的提示
+//                    if (errorMsg.contains("veo3") && !errorMsg.contains("veo3.1")) {
+//                        friendlyErrorMsg = "您选择的模型（" + request.getModel() + "）已被官方下架，请使用 veo3.1-fast 或 veo3.1-pro 模型。原错误信息：" + errorMsg;
+//                    }
+//                }
+//
+//                // 保存失败记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("txt2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("failed");
+//                record.setSiteId(SiteContext.getSiteId());
+//                generationRecordMapper.insert(record);
+//
+//                // 抛出异常，使用特定的错误消息前缀以便在catch块中识别
+//                throw new RuntimeException("VIDEO_GENERATION_FAILED:" + (friendlyErrorMsg != null ? friendlyErrorMsg : "未知错误"));
+//            } else {
+//                throw new RuntimeException("未知的视频生成状态：" + status);
+//            }
+//
+//            return response;
+//
+//        } catch (Exception e) {
+//            String errorMessage = e.getMessage();
+//            // 检查是否是业务异常（已经保存了失败记录的异常）
+//            // 通过检查异常消息是否以"VIDEO_GENERATION_FAILED:"开头来判断
+//            boolean alreadySaved = errorMessage != null && errorMessage.startsWith("VIDEO_GENERATION_FAILED:");
+//
+//            if (alreadySaved) {
+//                // 业务异常已保存记录，只需记录日志，并提取原始错误消息
+//                String originalError = errorMessage.substring("VIDEO_GENERATION_FAILED:".length());
+//                log.error("文生视频失败：{}", originalError);
+//                throw new RuntimeException("视频生成失败：" + originalError);
+//            } else {
+//                // 其他异常（如API调用失败等），记录错误日志并保存失败记录
+//                log.error("文生视频失败：{}", errorMessage, e);
+//
+//                // 保存失败记录
+//                try {
+//                    GenerationRecord record = new GenerationRecord();
+//                    record.setUserId(userId);
+//                    record.setUsername(user.getUsername());
+//                    record.setType("txt2video");
+//                    record.setModel(request.getModel());
+//                    record.setPrompt(request.getPrompt());
+//                    record.setStatus("failed");
+//                    record.setSiteId(SiteContext.getSiteId());
+//                    generationRecordMapper.insert(record);
+//                } catch (Exception ex) {
+//                    log.error("保存失败记录时出错：{}", ex.getMessage());
+//                }
+//
+//                throw new RuntimeException("文生视频失败：" + errorMessage);
+//            }
+//        }
+//    }
     
     /**
      * 图生视频
@@ -967,297 +1440,297 @@ public class GenerationService {
      * @param userId 用户ID
      * @return 生成响应
      */
-    @Transactional
-    public VideoGenerationResponse generateImageToVideo(ImageToVideoRequest request, Long userId) {
-        // 获取用户信息
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new RuntimeException("用户不存在");
-        }
-        
-        // 根据类型查找对应的API平台（type=img2video）
-        ApiPlatform platform = findPlatformByType("img2video", null);
-        if (platform == null) {
-            throw new RuntimeException("图生视频平台未配置，请在后台API接口管理中配置类型为'图生视频'的平台");
-        }
-        
-        // 检查apiKey是否有效
-        if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
-        }
-        
-        // 获取图生视频接口配置
-        ApiInterface img2videoInterface = findImageToImageInterface(platform.getId()); // 复用查找接口的方法
-        if (img2videoInterface == null) {
-            throw new RuntimeException("图生视频接口未配置");
-        }
-        
-        try {
-            // 构建请求参数
-            Map<String, Object> apiRequest = buildImageToVideoRequest(request, platform);
-            
-            // 调用API
-            String responseJson = callApi(img2videoInterface, platform, apiRequest);
-            
-            // 解析响应（使用新的解析方法，兼容多种响应格式）
-            VideoResponseInfo videoInfo = parseVideoResponse(responseJson, img2videoInterface.getResponseMode());
-            
-            // 构建响应
-            VideoGenerationResponse response = new VideoGenerationResponse();
-            
-            // 先检查状态，再检查URL
-            String status = videoInfo.getStatus();
-            if ("running".equals(status)) {
-                // 任务进行中，返回任务ID
-                response.setTaskId(videoInfo.getTaskId());
-                response.setStatus("processing");
-                
-                // 保存处理中记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("img2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("processing");
-                record.setSiteId(SiteContext.getSiteId());
-                generationRecordMapper.insert(record);
-            } else if ("succeeded".equals(status) || "success".equals(status)) {
-                // 任务成功，保存视频URL
-                String videoUrl = videoInfo.getVideoUrl();
-                if (videoUrl == null || videoUrl.isEmpty()) {
-                    throw new RuntimeException("视频生成成功但未返回视频URL");
-                }
-                
-                // 保存成功记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("img2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("success");
-                record.setSiteId(SiteContext.getSiteId());
-                record.setContentUrl(videoUrl);
-                record.setCost(calculateCost(1, "img2video"));
-                generationRecordMapper.insert(record);
-                
-                response.setVideoUrl(videoUrl);
-                response.setStatus("success");
-            } else if ("failed".equals(status)) {
-                // 任务失败
-                String errorMsg = videoInfo.getErrorMessage();
-                if (errorMsg == null || errorMsg.isEmpty()) {
-                    errorMsg = videoInfo.getFailureReason();
-                }
-                
-                // 检查是否是模型已下架的错误，如果是则提供更友好的提示
-                String friendlyErrorMsg = errorMsg;
-                if (errorMsg != null && (errorMsg.contains("下架") || errorMsg.contains("deprecated") || errorMsg.contains("veo3"))) {
-                    // 如果错误信息包含模型下架相关的关键词，提供更友好的提示
-                    if (errorMsg.contains("veo3") && !errorMsg.contains("veo3.1")) {
-                        friendlyErrorMsg = "您选择的模型（" + request.getModel() + "）已被官方下架，请使用 veo3.1-fast 或 veo3.1-pro 模型。原错误信息：" + errorMsg;
-                    }
-                }
-                
-                // 保存失败记录
-                GenerationRecord record = new GenerationRecord();
-                record.setUserId(userId);
-                record.setUsername(user.getUsername());
-                record.setType("img2video");
-                record.setModel(request.getModel());
-                record.setPrompt(request.getPrompt());
-                record.setStatus("failed");
-                record.setSiteId(SiteContext.getSiteId());
-                generationRecordMapper.insert(record);
-                
-                // 抛出异常，使用特定的错误消息前缀以便在catch块中识别
-                throw new RuntimeException("VIDEO_GENERATION_FAILED:" + (friendlyErrorMsg != null ? friendlyErrorMsg : "未知错误"));
-            } else {
-                throw new RuntimeException("未知的视频生成状态：" + status);
-            }
-            
-            return response;
-            
-        } catch (Exception e) {
-            String errorMessage = e.getMessage();
-            // 检查是否是业务异常（已经保存了失败记录的异常）
-            // 通过检查异常消息是否以"VIDEO_GENERATION_FAILED:"开头来判断
-            boolean alreadySaved = errorMessage != null && errorMessage.startsWith("VIDEO_GENERATION_FAILED:");
-            
-            if (alreadySaved) {
-                // 业务异常已保存记录，只需记录日志，并提取原始错误消息
-                String originalError = errorMessage.substring("VIDEO_GENERATION_FAILED:".length());
-                log.error("图生视频失败：{}", originalError);
-                throw new RuntimeException("视频生成失败：" + originalError);
-            } else {
-                // 其他异常（如API调用失败等），记录错误日志并保存失败记录
-                log.error("图生视频失败：{}", errorMessage, e);
-                
-                // 保存失败记录
-                try {
-                    GenerationRecord record = new GenerationRecord();
-                    record.setUserId(userId);
-                    record.setUsername(user.getUsername());
-                    record.setType("img2video");
-                    record.setModel(request.getModel());
-                    record.setPrompt(request.getPrompt());
-                    record.setStatus("failed");
-                    record.setSiteId(SiteContext.getSiteId());
-                    generationRecordMapper.insert(record);
-                } catch (Exception ex) {
-                    log.error("保存失败记录时出错：{}", ex.getMessage());
-                }
-                
-                throw new RuntimeException("图生视频失败：" + errorMessage);
-            }
-        }
-    }
+//    @Transactional
+//    public VideoGenerationResponse generateImageToVideo(ImageToVideoRequest request, Long userId) {
+//        // 获取用户信息
+//        User user = userMapper.selectById(userId);
+//        if (user == null) {
+//            throw new RuntimeException("用户不存在");
+//        }
+//
+//        // 根据类型查找对应的API平台（type=img2video）
+//        ApiPlatform platform = findPlatformByType("img2video", null);
+//        if (platform == null) {
+//            throw new RuntimeException("图生视频平台未配置，请在后台API接口管理中配置类型为'图生视频'的平台");
+//        }
+//
+//        // 检查apiKey是否有效
+//        if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
+//            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+//        }
+//
+//        // 获取图生视频接口配置
+//        ApiInterface img2videoInterface = findImageToImageInterface(platform.getId()); // 复用查找接口的方法
+//        if (img2videoInterface == null) {
+//            throw new RuntimeException("图生视频接口未配置");
+//        }
+//
+//        try {
+//            // 构建请求参数
+//            Map<String, Object> apiRequest = buildImageToVideoRequest(request, platform);
+//
+//            // 调用API
+//            String responseJson = callApi(img2videoInterface, platform, apiRequest);
+//
+//            // 解析响应（使用新的解析方法，兼容多种响应格式）
+//            VideoResponseInfo videoInfo = parseVideoResponse(responseJson, img2videoInterface.getResponseMode());
+//
+//            // 构建响应
+//            VideoGenerationResponse response = new VideoGenerationResponse();
+//
+//            // 先检查状态，再检查URL
+//            String status = videoInfo.getStatus();
+//            if ("running".equals(status)) {
+//                // 任务进行中，返回任务ID
+//                response.setTaskId(videoInfo.getTaskId());
+//                response.setStatus("processing");
+//
+//                // 保存处理中记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("img2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("processing");
+//                record.setSiteId(SiteContext.getSiteId());
+//                generationRecordMapper.insert(record);
+//            } else if ("succeeded".equals(status) || "success".equals(status)) {
+//                // 任务成功，保存视频URL
+//                String videoUrl = videoInfo.getVideoUrl();
+//                if (videoUrl == null || videoUrl.isEmpty()) {
+//                    throw new RuntimeException("视频生成成功但未返回视频URL");
+//                }
+//
+//                // 保存成功记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("img2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("success");
+//                record.setSiteId(SiteContext.getSiteId());
+//                record.setContentUrl(videoUrl);
+//                record.setCost(calculateCost(1, "img2video"));
+//                generationRecordMapper.insert(record);
+//
+//                response.setVideoUrl(videoUrl);
+//                response.setStatus("success");
+//            } else if ("failed".equals(status)) {
+//                // 任务失败
+//                String errorMsg = videoInfo.getErrorMessage();
+//                if (errorMsg == null || errorMsg.isEmpty()) {
+//                    errorMsg = videoInfo.getFailureReason();
+//                }
+//
+//                // 检查是否是模型已下架的错误，如果是则提供更友好的提示
+//                String friendlyErrorMsg = errorMsg;
+//                if (errorMsg != null && (errorMsg.contains("下架") || errorMsg.contains("deprecated") || errorMsg.contains("veo3"))) {
+//                    // 如果错误信息包含模型下架相关的关键词，提供更友好的提示
+//                    if (errorMsg.contains("veo3") && !errorMsg.contains("veo3.1")) {
+//                        friendlyErrorMsg = "您选择的模型（" + request.getModel() + "）已被官方下架，请使用 veo3.1-fast 或 veo3.1-pro 模型。原错误信息：" + errorMsg;
+//                    }
+//                }
+//
+//                // 保存失败记录
+//                GenerationRecord record = new GenerationRecord();
+//                record.setUserId(userId);
+//                record.setUsername(user.getUsername());
+//                record.setType("img2video");
+//                record.setModel(request.getModel());
+//                record.setPrompt(request.getPrompt());
+//                record.setStatus("failed");
+//                record.setSiteId(SiteContext.getSiteId());
+//                generationRecordMapper.insert(record);
+//
+//                // 抛出异常，使用特定的错误消息前缀以便在catch块中识别
+//                throw new RuntimeException("VIDEO_GENERATION_FAILED:" + (friendlyErrorMsg != null ? friendlyErrorMsg : "未知错误"));
+//            } else {
+//                throw new RuntimeException("未知的视频生成状态：" + status);
+//            }
+//
+//            return response;
+//
+//        } catch (Exception e) {
+//            String errorMessage = e.getMessage();
+//            // 检查是否是业务异常（已经保存了失败记录的异常）
+//            // 通过检查异常消息是否以"VIDEO_GENERATION_FAILED:"开头来判断
+//            boolean alreadySaved = errorMessage != null && errorMessage.startsWith("VIDEO_GENERATION_FAILED:");
+//
+//            if (alreadySaved) {
+//                // 业务异常已保存记录，只需记录日志，并提取原始错误消息
+//                String originalError = errorMessage.substring("VIDEO_GENERATION_FAILED:".length());
+//                log.error("图生视频失败：{}", originalError);
+//                throw new RuntimeException("视频生成失败：" + originalError);
+//            } else {
+//                // 其他异常（如API调用失败等），记录错误日志并保存失败记录
+//                log.error("图生视频失败：{}", errorMessage, e);
+//
+//                // 保存失败记录
+//                try {
+//                    GenerationRecord record = new GenerationRecord();
+//                    record.setUserId(userId);
+//                    record.setUsername(user.getUsername());
+//                    record.setType("img2video");
+//                    record.setModel(request.getModel());
+//                    record.setPrompt(request.getPrompt());
+//                    record.setStatus("failed");
+//                    record.setSiteId(SiteContext.getSiteId());
+//                    generationRecordMapper.insert(record);
+//                } catch (Exception ex) {
+//                    log.error("保存失败记录时出错：{}", ex.getMessage());
+//                }
+//
+//                throw new RuntimeException("图生视频失败：" + errorMessage);
+//            }
+//        }
+//    }
     
-    /**
-     * 构建文生视频请求参数
-     * 根据API文档构建符合要求的参数
-     */
-    private Map<String, Object> buildTextToVideoRequest(TextToVideoRequest request, ApiPlatform platform) {
-        Map<String, Object> params = new HashMap<>();
-        
-        // 必填参数：提示词（只支持英文）
-        params.put("prompt", request.getPrompt());
-        
-        // 必填参数：模型
-        // 支持模型: veo3.1-fast, veo3.1-pro, veo3-fast, veo3-pro
-        // 注意：veo3-fast和veo3-pro已被官方下架，需要自动替换为veo3.1模型
-        String model = request.getModel();
-        if (model != null && !model.isEmpty()) {
-            // 检查是否是已下架的veo3模型，如果是则自动替换为veo3.1模型
-            if ("veo3-fast".equals(model)) {
-                log.warn("检测到已下架的模型 veo3-fast，自动替换为 veo3.1-fast");
-                model = "veo3.1-fast";
-            } else if ("veo3-pro".equals(model)) {
-                log.warn("检测到已下架的模型 veo3-pro，自动替换为 veo3.1-pro");
-                model = "veo3.1-pro";
-            }
-            params.put("model", model);
-        } else {
-            // 如果没有指定模型，使用默认模型
-            params.put("model", "veo3.1-fast");
-        }
-        
-        // 选填参数：首帧图片URL
-        // 支持模型: veo3-fast, veo3-pro, veo3.1-fast, veo3.1-pro
-        if (request.getFirstFrameUrl() != null && !request.getFirstFrameUrl().trim().isEmpty()) {
-            params.put("firstFrameUrl", request.getFirstFrameUrl());
-        }
-        
-        // 选填参数：尾帧图片URL（需搭配firstFrameUrl使用）
-        // 支持模型: veo3.1-fast, veo3.1-pro
-        if (request.getLastFrameUrl() != null && !request.getLastFrameUrl().trim().isEmpty()) {
-            // 检查是否同时设置了firstFrameUrl
-            if (request.getFirstFrameUrl() == null || request.getFirstFrameUrl().trim().isEmpty()) {
-                log.warn("尾帧图片URL需要搭配首帧图片URL使用，忽略lastFrameUrl参数");
-            } else {
-                params.put("lastFrameUrl", request.getLastFrameUrl());
-            }
-        }
-        
-        // 选填参数：参考图片URL数组（最多支持三张图片，不可搭配首尾帧使用）
-        // 支持尺寸: 16:9
-        // 支持模型: veo3.1-fast
-        if (request.getUrls() != null && !request.getUrls().isEmpty()) {
-            // 检查是否同时设置了首尾帧（如果设置了首尾帧，则不能使用urls）
-            if ((request.getFirstFrameUrl() != null && !request.getFirstFrameUrl().trim().isEmpty()) ||
-                (request.getLastFrameUrl() != null && !request.getLastFrameUrl().trim().isEmpty())) {
-                log.warn("参考图片URL数组不可搭配首尾帧使用，忽略urls参数");
-            } else {
-                // 限制最多3张图片
-                List<String> urls = request.getUrls();
-                if (urls.size() > 3) {
-                    log.warn("参考图片URL数组最多支持3张，已截取前3张");
-                    urls = urls.subList(0, 3);
-                }
-                params.put("urls", urls);
-            }
-        }
-        
-        // 选填参数：视频宽高比（默认16:9）
-        // 支持的比例: 16:9, 9:16
-        if (request.getAspectRatio() != null && !request.getAspectRatio().isEmpty() && !"Auto".equals(request.getAspectRatio())) {
-            // 验证宽高比是否支持
-            if ("16:9".equals(request.getAspectRatio()) || "9:16".equals(request.getAspectRatio())) {
-                params.put("aspectRatio", request.getAspectRatio());
-            } else {
-                log.warn("不支持的宽高比: {}，使用默认值16:9", request.getAspectRatio());
-                params.put("aspectRatio", "16:9");
-            }
-        } else {
-            // 默认值16:9
-            params.put("aspectRatio", "16:9");
-        }
-        
-        // 选填参数：回调接口URL
-        // 如果填了webHook，进度与结果则以Post请求回调地址的方式进行回复
-        // 如果webHook为"-1"，会立即返回一个id用于轮询
-        if (request.getWebHook() != null && !request.getWebHook().trim().isEmpty()) {
-            params.put("webHook", request.getWebHook());
-        }
-        
-        // 选填参数：关闭进度回复，直接回复最终结果（默认false）
-        // 建议搭配webHook使用
-        if (request.getShutProgress() != null) {
-            params.put("shutProgress", request.getShutProgress());
-        } else {
-            params.put("shutProgress", false);
-        }
-        
-        return params;
-    }
+//    /**
+//     * 构建文生视频请求参数
+//     * 根据API文档构建符合要求的参数
+//     */
+//    private Map<String, Object> buildTextToVideoRequest(TextToVideoRequest request, ApiPlatform platform) {
+//        Map<String, Object> params = new HashMap<>();
+//
+//        // 必填参数：提示词（只支持英文）
+//        params.put("prompt", request.getPrompt());
+//
+//        // 必填参数：模型
+//        // 支持模型: veo3.1-fast, veo3.1-pro, veo3-fast, veo3-pro
+//        // 注意：veo3-fast和veo3-pro已被官方下架，需要自动替换为veo3.1模型
+//        String model = request.getModel();
+//        if (model != null && !model.isEmpty()) {
+//            // 检查是否是已下架的veo3模型，如果是则自动替换为veo3.1模型
+//            if ("veo3-fast".equals(model)) {
+//                log.warn("检测到已下架的模型 veo3-fast，自动替换为 veo3.1-fast");
+//                model = "veo3.1-fast";
+//            } else if ("veo3-pro".equals(model)) {
+//                log.warn("检测到已下架的模型 veo3-pro，自动替换为 veo3.1-pro");
+//                model = "veo3.1-pro";
+//            }
+//            params.put("model", model);
+//        } else {
+//            // 如果没有指定模型，使用默认模型
+//            params.put("model", "veo3.1-fast");
+//        }
+//
+//        // 选填参数：首帧图片URL
+//        // 支持模型: veo3-fast, veo3-pro, veo3.1-fast, veo3.1-pro
+//        if (request.getFirstFrameUrl() != null && !request.getFirstFrameUrl().trim().isEmpty()) {
+//            params.put("firstFrameUrl", request.getFirstFrameUrl());
+//        }
+//
+//        // 选填参数：尾帧图片URL（需搭配firstFrameUrl使用）
+//        // 支持模型: veo3.1-fast, veo3.1-pro
+//        if (request.getLastFrameUrl() != null && !request.getLastFrameUrl().trim().isEmpty()) {
+//            // 检查是否同时设置了firstFrameUrl
+//            if (request.getFirstFrameUrl() == null || request.getFirstFrameUrl().trim().isEmpty()) {
+//                log.warn("尾帧图片URL需要搭配首帧图片URL使用，忽略lastFrameUrl参数");
+//            } else {
+//                params.put("lastFrameUrl", request.getLastFrameUrl());
+//            }
+//        }
+//
+//        // 选填参数：参考图片URL数组（最多支持三张图片，不可搭配首尾帧使用）
+//        // 支持尺寸: 16:9
+//        // 支持模型: veo3.1-fast
+//        if (request.getUrls() != null && !request.getUrls().isEmpty()) {
+//            // 检查是否同时设置了首尾帧（如果设置了首尾帧，则不能使用urls）
+//            if ((request.getFirstFrameUrl() != null && !request.getFirstFrameUrl().trim().isEmpty()) ||
+//                (request.getLastFrameUrl() != null && !request.getLastFrameUrl().trim().isEmpty())) {
+//                log.warn("参考图片URL数组不可搭配首尾帧使用，忽略urls参数");
+//            } else {
+//                // 限制最多3张图片
+//                List<String> urls = request.getUrls();
+//                if (urls.size() > 3) {
+//                    log.warn("参考图片URL数组最多支持3张，已截取前3张");
+//                    urls = urls.subList(0, 3);
+//                }
+//                params.put("urls", urls);
+//            }
+//        }
+//
+//        // 选填参数：视频宽高比（默认16:9）
+//        // 支持的比例: 16:9, 9:16
+//        if (request.getAspectRatio() != null && !request.getAspectRatio().isEmpty() && !"Auto".equals(request.getAspectRatio())) {
+//            // 验证宽高比是否支持
+//            if ("16:9".equals(request.getAspectRatio()) || "9:16".equals(request.getAspectRatio())) {
+//                params.put("aspectRatio", request.getAspectRatio());
+//            } else {
+//                log.warn("不支持的宽高比: {}，使用默认值16:9", request.getAspectRatio());
+//                params.put("aspectRatio", "16:9");
+//            }
+//        } else {
+//            // 默认值16:9
+//            params.put("aspectRatio", "16:9");
+//        }
+//
+//        // 选填参数：回调接口URL
+//        // 如果填了webHook，进度与结果则以Post请求回调地址的方式进行回复
+//        // 如果webHook为"-1"，会立即返回一个id用于轮询
+//        if (request.getWebHook() != null && !request.getWebHook().trim().isEmpty()) {
+//            params.put("webHook", request.getWebHook());
+//        }
+//
+//        // 选填参数：关闭进度回复，直接回复最终结果（默认false）
+//        // 建议搭配webHook使用
+//        if (request.getShutProgress() != null) {
+//            params.put("shutProgress", request.getShutProgress());
+//        } else {
+//            params.put("shutProgress", false);
+//        }
+//
+//        return params;
+//    }
     
     /**
      * 构建图生视频请求参数
      */
-    private Map<String, Object> buildImageToVideoRequest(ImageToVideoRequest request, ApiPlatform platform) {
-        Map<String, Object> params = new HashMap<>();
-        
-        // 基础参数
-        params.put("prompt", request.getPrompt());
-        params.put("image", request.getImage()); // 参考图片
-        
-        // 处理宽高比
-        if (request.getAspectRatio() != null && !request.getAspectRatio().isEmpty() && !"Auto".equals(request.getAspectRatio())) {
-            params.put("aspect_ratio", request.getAspectRatio());
-        }
-        
-        // 处理分辨率
-        if (request.getResolution() != null && !request.getResolution().isEmpty()) {
-            Map<String, Integer> size = parseResolution(request.getResolution(), request.getAspectRatio());
-            params.put("width", size.get("width"));
-            params.put("height", size.get("height"));
-        }
-        
-        // 时长
-        if (request.getDuration() != null) {
-            params.put("duration", request.getDuration());
-        }
-        
-        // 模型（添加自动替换逻辑，将已下架的veo3模型替换为veo3.1模型）
-        String model = request.getModel();
-        if (model != null && !model.isEmpty()) {
-            // 检查是否是已下架的veo3模型，如果是则自动替换为veo3.1模型
-            if ("veo3-fast".equals(model)) {
-                log.warn("检测到已下架的模型 veo3-fast，自动替换为 veo3.1-fast");
-                model = "veo3.1-fast";
-            } else if ("veo3-pro".equals(model)) {
-                log.warn("检测到已下架的模型 veo3-pro，自动替换为 veo3.1-pro");
-                model = "veo3.1-pro";
-            }
-            params.put("model", model);
-        } else {
-            // 如果没有指定模型，使用默认模型
-            params.put("model", "veo3.1-fast");
-        }
-        
-        return params;
-    }
+//    private Map<String, Object> buildImageToVideoRequest(ImageToVideoRequest request, ApiPlatform platform) {
+//        Map<String, Object> params = new HashMap<>();
+//
+//        // 基础参数
+//        params.put("prompt", request.getPrompt());
+//        params.put("image", request.getImage()); // 参考图片
+//
+//        // 处理宽高比
+//        if (request.getAspectRatio() != null && !request.getAspectRatio().isEmpty() && !"Auto".equals(request.getAspectRatio())) {
+//            params.put("aspect_ratio", request.getAspectRatio());
+//        }
+//
+//        // 处理分辨率
+//        if (request.getResolution() != null && !request.getResolution().isEmpty()) {
+//            Map<String, Integer> size = parseResolution(request.getResolution(), request.getAspectRatio());
+//            params.put("width", size.get("width"));
+//            params.put("height", size.get("height"));
+//        }
+//
+//        // 时长
+//        if (request.getDuration() != null) {
+//            params.put("duration", request.getDuration());
+//        }
+//
+//        // 模型（添加自动替换逻辑，将已下架的veo3模型替换为veo3.1模型）
+//        String model = request.getModel();
+//        if (model != null && !model.isEmpty()) {
+//            // 检查是否是已下架的veo3模型，如果是则自动替换为veo3.1模型
+//            if ("veo3-fast".equals(model)) {
+//                log.warn("检测到已下架的模型 veo3-fast，自动替换为 veo3.1-fast");
+//                model = "veo3.1-fast";
+//            } else if ("veo3-pro".equals(model)) {
+//                log.warn("检测到已下架的模型 veo3-pro，自动替换为 veo3.1-pro");
+//                model = "veo3.1-pro";
+//            }
+//            params.put("model", model);
+//        } else {
+//            // 如果没有指定模型，使用默认模型
+//            params.put("model", "veo3.1-fast");
+//        }
+//
+//        return params;
+//    }
     
     /**
      * 视频响应信息内部类

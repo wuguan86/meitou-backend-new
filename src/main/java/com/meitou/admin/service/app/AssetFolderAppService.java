@@ -2,8 +2,13 @@ package com.meitou.admin.service.app;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.meitou.admin.common.SiteContext;
 import com.meitou.admin.entity.AssetFolder;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
+import com.meitou.admin.entity.UserAsset;
 import com.meitou.admin.mapper.AssetFolderMapper;
+import com.meitou.admin.mapper.UserAssetMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +25,7 @@ import java.util.List;
 public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetFolder> {
     
     private final AssetFolderMapper folderMapper;
+    private final UserAssetMapper userAssetMapper;
     
     /**
      * 创建文件夹
@@ -31,9 +37,15 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
      */
     @Transactional
     public AssetFolder createFolder(Long userId, String name, String parentPath) {
+        // 获取当前站点ID
+        Long siteId = SiteContext.getSiteId();
+        if (siteId == null) {
+            throw new BusinessException(ErrorCode.SITE_NOT_FOUND);
+        }
+
         // 验证文件夹名称
         if (!StringUtils.hasText(name)) {
-            throw new RuntimeException("文件夹名称不能为空");
+            throw new BusinessException("文件夹名称不能为空");
         }
         
         // 清理父路径（去除首尾空格和斜杠）
@@ -52,12 +64,13 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
         // 检查文件夹是否已存在
         LambdaQueryWrapper<AssetFolder> checkWrapper = new LambdaQueryWrapper<>();
         checkWrapper.eq(AssetFolder::getUserId, userId);
+        checkWrapper.eq(AssetFolder::getSiteId, siteId);
         checkWrapper.eq(AssetFolder::getFolderPath, folderPath);
         checkWrapper.eq(AssetFolder::getDeleted, 0);
         AssetFolder existing = folderMapper.selectOne(checkWrapper);
         
         if (existing != null) {
-            throw new RuntimeException("文件夹已存在");
+            throw new BusinessException("文件夹已存在");
         }
         
         // 创建文件夹对象
@@ -66,6 +79,7 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
         folder.setFolderPath(folderPath);
         folder.setParentPath(cleanedParentPath);
         folder.setUserId(userId);
+        folder.setSiteId(siteId);
         
         // 保存到数据库
         folderMapper.insert(folder);
@@ -94,7 +108,9 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
         // 按名称排序
         wrapper.orderByAsc(AssetFolder::getName);
         
-        return folderMapper.selectList(wrapper);
+        List<AssetFolder> folders = folderMapper.selectList(wrapper);
+        populateThumbnails(folders);
+        return folders;
     }
     
     /**
@@ -108,6 +124,42 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
         wrapper.eq(AssetFolder::getUserId, userId);
         wrapper.orderByAsc(AssetFolder::getFolderPath);
         return folderMapper.selectList(wrapper);
+    }
+
+    /**
+     * 填充文件夹缩略图
+     */
+    private void populateThumbnails(List<AssetFolder> folders) {
+        if (folders == null || folders.isEmpty()) {
+            return;
+        }
+        
+        for (AssetFolder folder : folders) {
+            // 查询文件夹下最新的一个图片资产
+            LambdaQueryWrapper<UserAsset> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(UserAsset::getUserId, folder.getUserId());
+            wrapper.eq(UserAsset::getFolder, folder.getFolderPath());
+            wrapper.eq(UserAsset::getType, "image"); // 优先展示图片
+            wrapper.orderByDesc(UserAsset::getUploadDate);
+            wrapper.last("LIMIT 1");
+            
+            UserAsset asset = userAssetMapper.selectOne(wrapper);
+            if (asset != null) {
+                folder.setThumbnail(asset.getThumbnail() != null ? asset.getThumbnail() : asset.getUrl());
+            } else {
+                // 如果没有图片，尝试查找视频的缩略图
+                wrapper = new LambdaQueryWrapper<>();
+                wrapper.eq(UserAsset::getUserId, folder.getUserId());
+                wrapper.eq(UserAsset::getFolder, folder.getFolderPath());
+                wrapper.eq(UserAsset::getType, "video");
+                wrapper.orderByDesc(UserAsset::getUploadDate);
+                wrapper.last("LIMIT 1");
+                asset = userAssetMapper.selectOne(wrapper);
+                if (asset != null && asset.getThumbnail() != null) {
+                    folder.setThumbnail(asset.getThumbnail());
+                }
+            }
+        }
     }
     
     /**
@@ -165,11 +217,23 @@ public class AssetFolderAppService extends ServiceImpl<AssetFolderMapper, AssetF
             throw new RuntimeException("文件夹名称已存在");
         }
         
+        String oldFolderPath = folder.getFolderPath();
+        
         // 更新文件夹名称和路径
         folder.setName(newName);
         folder.setFolderPath(newFolderPath);
         
         folderMapper.updateById(folder);
+        
+        // 更新文件夹内的资产路径
+        UserAsset assetUpdate = new UserAsset();
+        assetUpdate.setFolder(newFolderPath);
+        
+        LambdaQueryWrapper<UserAsset> assetWrapper = new LambdaQueryWrapper<>();
+        assetWrapper.eq(UserAsset::getUserId, userId);
+        assetWrapper.eq(UserAsset::getFolder, oldFolderPath);
+        
+        userAssetMapper.update(assetUpdate, assetWrapper);
         
         return folder;
     }

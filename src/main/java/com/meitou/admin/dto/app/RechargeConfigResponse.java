@@ -28,6 +28,11 @@ public class RechargeConfigResponse {
      * 是否启用自定义金额
      */
     private Boolean allowCustom;
+
+    /**
+     * 启用的支付方式列表
+     */
+    private List<String> enabledPaymentMethods;
     
     /**
      * 充值选项内部类

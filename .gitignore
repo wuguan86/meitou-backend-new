@@ -8,6 +8,7 @@ target/
 # 忽略 application.yml 的配置
 application.yml
 application-dev.yml
+application-prod.yml
 
 # 忽略 VS Code 的配置
 .vscode/

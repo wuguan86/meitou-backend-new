@@ -2,6 +2,8 @@ package com.meitou.admin.service.admin;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.meitou.admin.common.SiteContext;
+import com.meitou.admin.config.MybatisPlusConfig;
 import com.meitou.admin.entity.ApiInterface;
 import com.meitou.admin.entity.ApiPlatform;
 import com.meitou.admin.mapper.ApiInterfaceMapper;
@@ -184,11 +186,25 @@ public class ApiPlatformService extends ServiceImpl<ApiPlatformMapper, ApiPlatfo
         
         // 保存新接口
         if (interfaces != null && !interfaces.isEmpty()) {
-            for (ApiInterface apiInterface : interfaces) {
-                apiInterface.setPlatformId(id);
-                // 设置接口的siteId，从平台的siteId复制
-                apiInterface.setSiteId(existing.getSiteId());
-                interfaceMapper.insert(apiInterface);
+            // 如果站点ID发生了变化，需要临时切换上下文，以确保接口插入到正确的站点
+            // 注意：这里假设SiteContext是ThreadLocal管理的，修改后只影响当前线程的后续操作
+            Long currentSiteId = SiteContext.getSiteId();
+            if (currentSiteId != null && !currentSiteId.equals(existing.getSiteId())) {
+                SiteContext.setSiteId(existing.getSiteId());
+            }
+            
+            try {
+                for (ApiInterface apiInterface : interfaces) {
+                    apiInterface.setPlatformId(id);
+                    // 设置接口的siteId，从平台的siteId复制
+                    apiInterface.setSiteId(existing.getSiteId());
+                    interfaceMapper.insert(apiInterface);
+                }
+            } finally {
+                // 恢复上下文（虽然请求即将结束，但保持良好的编程习惯）
+                if (currentSiteId != null && !currentSiteId.equals(existing.getSiteId())) {
+                    SiteContext.setSiteId(currentSiteId);
+                }
             }
         }
         

@@ -3,7 +3,10 @@ package com.meitou.admin.service.admin;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.BackendAccount;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.BackendAccountMapper;
+import com.meitou.admin.util.PasswordValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -49,6 +52,9 @@ public class BackendAccountService extends ServiceImpl<BackendAccountMapper, Bac
         if (account.getPassword() == null || account.getPassword().trim().isEmpty()) {
             throw new RuntimeException("密码不能为空");
         }
+        if (!PasswordValidator.validate(account.getPassword())) {
+            throw new RuntimeException("密码强度不足，需包含字母、数字、符号且长度不少于8位");
+        }
         
         // 加密密码
         account.setPassword(passwordEncoder.encode(account.getPassword()));
@@ -86,6 +92,9 @@ public class BackendAccountService extends ServiceImpl<BackendAccountMapper, Bac
         }
         // 密码更新（如果提供）
         if (account.getPassword() != null && !account.getPassword().isEmpty()) {
+            if (!PasswordValidator.validate(account.getPassword())) {
+                throw new BusinessException(ErrorCode.PASSWORD_TOO_WEAK);
+            }
             existing.setPassword(passwordEncoder.encode(account.getPassword()));
         }
         

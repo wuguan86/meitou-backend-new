@@ -73,6 +73,24 @@ public class SiteController {
     }
     
     /**
+     * 更新站点信息
+     * 
+     * @param id 站点ID
+     * @param site 站点信息
+     * @return 更新后的站点
+     */
+    @PutMapping("/{id}")
+    public Result<Site> updateSite(@PathVariable Long id, @RequestBody Site site) {
+        try {
+            Site updated = siteService.updateSite(id, site);
+            return Result.success("更新成功", updated);
+        } catch (Exception e) {
+            log.error("更新站点失败", e);
+            return Result.error("更新站点失败：" + e.getMessage());
+        }
+    }
+
+    /**
      * 更新站点域名（只能修改域名）
      * 
      * @param id 站点ID

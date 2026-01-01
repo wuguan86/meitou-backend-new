@@ -53,11 +53,21 @@ public class SiteInterceptor implements HandlerInterceptor {
                 // 处理可能包含端口的情况，如：localhost:8080
                 String domain = host.split(":")[0];
                 Site site = siteCacheService.getSiteByDomain(domain);
+                
+                // If exact match fails and domain starts with www., try stripping www.
+                if (site == null && domain.startsWith("www.")) {
+                    String rootDomain = domain.substring(4);
+                    site = siteCacheService.getSiteByDomain(rootDomain);
+                    if (site != null) {
+                        log.debug("Identified site ID after removing www prefix: {} -> {}", rootDomain, site.getId());
+                    }
+                }
+                
                 if (site != null) {
                     siteId = site.getId();
-                    log.debug("从域名识别站点ID: {} -> {}", domain, siteId);
+                    log.debug("Identified site ID from domain: {} -> {}", domain, siteId);
                 } else {
-                    log.debug("未找到域名对应的站点: {}", domain);
+                    log.debug("Site not found for domain: {}", domain);
                 }
             }
         }
@@ -78,4 +88,3 @@ public class SiteInterceptor implements HandlerInterceptor {
         SiteContext.clear();
     }
 }
-

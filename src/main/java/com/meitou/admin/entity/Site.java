@@ -42,6 +42,11 @@ public class Site {
      * 站点描述
      */
     private String description;
+
+    /**
+     * 使用手册
+     */
+    private String manual;
     
     /**
      * 创建时间

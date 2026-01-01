@@ -1,11 +1,15 @@
 package com.meitou.admin.controller.app;
 
 import com.meitou.admin.common.Result;
+import com.meitou.admin.dto.app.ChangePasswordRequest;
 import com.meitou.admin.dto.app.CodeLoginRequest;
+import com.meitou.admin.dto.app.PasswordLoginRequest;
 import com.meitou.admin.dto.app.SendCodeRequest;
+import com.meitou.admin.dto.app.SetPasswordRequest;
 import com.meitou.admin.dto.app.UserLoginResponse;
 import com.meitou.admin.service.app.AuthAppService;
 import com.meitou.admin.service.app.SmsCodeService;
+import com.meitou.admin.util.TokenUtil;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -52,6 +56,45 @@ public class AuthAppController {
         UserLoginResponse response = authAppService.loginByCode(request);
         return Result.success("登录成功", response);
     }
+
+    @PostMapping("/login-by-password")
+    public Result<UserLoginResponse> loginByPassword(@Valid @RequestBody PasswordLoginRequest request) {
+        UserLoginResponse response = authAppService.loginByPassword(request);
+        return Result.success("登录成功", response);
+    }
+
+    /**
+     * 设置密码接口
+     * 
+     * @param request 设置密码请求
+     * @param token Token
+     * @return 结果
+     */
+    @PostMapping("/set-password")
+    public Result<Void> setPassword(@Valid @RequestBody SetPasswordRequest request,
+                                   @RequestHeader("Authorization") String token) {
+        Long userId = TokenUtil.getUserIdFromToken(token);
+        if (userId == null) {
+            return Result.error("未登录或Token无效");
+        }
+        
+        authAppService.setPassword(userId, request.getPassword());
+        return Result.success("密码设置成功");
+    }
+
+    @PostMapping("/change-password")
+    public Result<Void> changePassword(
+            @Valid @RequestBody ChangePasswordRequest request,
+            @RequestHeader("Authorization") String token
+    ) {
+        Long userId = TokenUtil.getUserIdFromToken(token);
+        if (userId == null) {
+            return Result.error("未登录或Token无效");
+        }
+
+        authAppService.changePassword(userId, request.getOldPassword(), request.getNewPassword(), request.getCode());
+        return Result.success("密码修改成功");
+    }
     
     /**
      * 获取当前用户信息接口
@@ -64,7 +107,7 @@ public class AuthAppController {
             @RequestHeader(value = "Authorization", required = false) String token) {
         try {
             // 从Token中提取用户ID
-            Long userId = com.meitou.admin.util.TokenUtil.getUserIdFromToken(token);
+            Long userId = TokenUtil.getUserIdFromToken(token);
             if (userId == null) {
                 return Result.error("未登录或Token无效");
             }
@@ -76,4 +119,3 @@ public class AuthAppController {
         }
     }
 }
-

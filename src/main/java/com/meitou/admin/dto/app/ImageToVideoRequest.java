@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Max;
 import lombok.Data;
+import java.util.List;
 
 /**
  * 图生视频请求 DTO
@@ -18,11 +19,36 @@ public class ImageToVideoRequest {
     private String prompt;
     
     /**
-     * 参考图片URL或base64（必填）
+     * 参考图片URL或base64（必填，对应 firstFrameUrl 或 urls 中的第一张）
      */
     @NotBlank(message = "参考图片不能为空")
     private String image;
     
+    /**
+     * 首帧图片URL（选填，若不传则使用 image 字段）
+     */
+    private String firstFrameUrl;
+
+    /**
+     * 尾帧图片URL（选填）
+     */
+    private String lastFrameUrl;
+
+    /**
+     * 参考图片URL列表（选填，不可与首尾帧同时使用）
+     */
+    private List<String> urls;
+
+    /**
+     * 回调地址（选填）
+     */
+    private String webHook;
+
+    /**
+     * 是否关闭进度回复（选填）
+     */
+    private Boolean shutProgress;
+
     /**
      * 模型名称（可选）
      */

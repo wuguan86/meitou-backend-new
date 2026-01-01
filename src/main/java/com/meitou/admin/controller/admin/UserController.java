@@ -1,5 +1,6 @@
 package com.meitou.admin.controller.admin;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.meitou.admin.annotation.SiteScope;
 import com.meitou.admin.common.Result;
 import com.meitou.admin.entity.User;
@@ -25,16 +26,20 @@ public class UserController {
      * 
      * @param siteId 站点ID（必传）：1=医美类, 2=电商类, 3=生活服务类
      * @param search 搜索关键词（可选）
-     * @return 用户列表
+     * @param page 当前页码（可选，默认1）
+     * @param size 每页数量（可选，默认10）
+     * @return 分页用户列表
      */
     @GetMapping
     @SiteScope // 使用 AOP 自动处理 SiteContext
-    public Result<List<User>> getUsers(
+    public Result<IPage<User>> getUsers(
             @RequestParam(required = true) Long siteId,
-            @RequestParam(required = false) String search
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "10") Integer size
     ) {
         // SiteContext 已由 @SiteScope 注解自动设置
-        List<User> users = userService.getUsers(siteId, search);
+        IPage<User> users = userService.getUsers(siteId, search, page, size);
         return Result.success(users);
     }
     

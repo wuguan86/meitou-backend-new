@@ -1,11 +1,14 @@
 package com.meitou.admin.service.admin;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.InvitationCode;
 import com.meitou.admin.mapper.InvitationCodeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -48,6 +51,32 @@ public class InvitationCodeService extends ServiceImpl<InvitationCodeMapper, Inv
         return codeMapper.selectList(wrapper);
     }
     
+    /**
+     * 分页获取邀请码列表
+     * 
+     * @param page 分页对象
+     * @param code 邀请码
+     * @param channel 渠道
+     * @param status 状态
+     * @return 分页结果
+     */
+    public IPage<InvitationCode> getPage(Page<InvitationCode> page, String code, String channel, String status) {
+        LambdaQueryWrapper<InvitationCode> wrapper = new LambdaQueryWrapper<>();
+        
+        if (StringUtils.hasText(code)) {
+            wrapper.like(InvitationCode::getCode, code);
+        }
+        if (StringUtils.hasText(channel)) {
+            wrapper.like(InvitationCode::getChannel, channel);
+        }
+        if (StringUtils.hasText(status) && !"all".equals(status)) {
+            wrapper.eq(InvitationCode::getStatus, status);
+        }
+        
+        wrapper.orderByDesc(InvitationCode::getCreatedAt);
+        return codeMapper.selectPage(page, wrapper);
+    }
+
     /**
      * 生成邀请码
      * 
@@ -114,9 +143,33 @@ public class InvitationCodeService extends ServiceImpl<InvitationCodeMapper, Inv
         if (code.getStatus() != null) {
             existing.setStatus(code.getStatus());
         }
+        if (code.getChannel() != null) {
+            existing.setChannel(code.getChannel());
+        }
+        if (code.getPoints() != null) {
+            existing.setPoints(code.getPoints());
+        }
+        if (code.getMaxUses() != null) {
+            existing.setMaxUses(code.getMaxUses());
+        }
+        if (code.getValidStartDate() != null) {
+            existing.setValidStartDate(code.getValidStartDate());
+        }
+        if (code.getValidEndDate() != null) {
+            existing.setValidEndDate(code.getValidEndDate());
+        }
         
         codeMapper.updateById(existing);
         return existing;
+    }
+
+    /**
+     * 删除邀请码
+     *
+     * @param id 邀请码ID
+     */
+    public void deleteCode(Long id) {
+        codeMapper.deleteById(id);
     }
     
     /**

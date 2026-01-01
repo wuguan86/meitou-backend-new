@@ -65,7 +65,18 @@ public class PublishedContentService extends ServiceImpl<PublishedContentMapper,
         content.setTitle(title);
         content.setDescription(description);
         content.setContentUrl(contentUrl);
-        content.setThumbnail(thumbnail);
+        
+        // 处理缩略图逻辑：如果是视频且缩略图为空或与内容URL相同，尝试自动生成（针对阿里云OSS）
+        if ("video".equals(type) && (thumbnail == null || thumbnail.isEmpty() || thumbnail.equals(contentUrl))) {
+            if (contentUrl != null && contentUrl.contains("aliyuncs.com")) {
+                content.setThumbnail(contentUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast");
+            } else {
+                content.setThumbnail(thumbnail);
+            }
+        } else {
+            content.setThumbnail(thumbnail);
+        }
+        
         content.setType(type);
         content.setGenerationType(generationType);
         content.setGenerationConfig(generationConfig);

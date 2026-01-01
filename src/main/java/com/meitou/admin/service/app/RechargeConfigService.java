@@ -4,13 +4,16 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meitou.admin.dto.app.RechargeConfigResponse;
+import com.meitou.admin.entity.PaymentConfig;
 import com.meitou.admin.entity.RechargeConfig;
+import com.meitou.admin.mapper.PaymentConfigMapper;
 import com.meitou.admin.mapper.RechargeConfigMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 充值配置服务
@@ -21,6 +24,7 @@ import java.util.List;
 public class RechargeConfigService {
     
     private final RechargeConfigMapper rechargeConfigMapper;
+    private final PaymentConfigMapper paymentConfigMapper;
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     /**
@@ -40,7 +44,19 @@ public class RechargeConfigService {
             throw new RuntimeException("未找到充值配置");
         }
         
-        return convertToResponse(config);
+        RechargeConfigResponse response = convertToResponse(config);
+        
+        // 获取启用的支付方式
+        LambdaQueryWrapper<PaymentConfig> paymentWrapper = new LambdaQueryWrapper<>();
+        paymentWrapper.eq(PaymentConfig::getIsEnabled, true);
+        paymentWrapper.eq(PaymentConfig::getDeleted, 0);
+        List<PaymentConfig> paymentConfigs = paymentConfigMapper.selectList(paymentWrapper);
+        List<String> enabledPaymentMethods = paymentConfigs.stream()
+                .map(PaymentConfig::getPaymentType)
+                .collect(Collectors.toList());
+        response.setEnabledPaymentMethods(enabledPaymentMethods);
+        
+        return response;
     }
     
     /**

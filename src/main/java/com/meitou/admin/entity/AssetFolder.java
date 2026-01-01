@@ -38,6 +38,12 @@ public class AssetFolder {
      */
     @TableField("user_id")
     private Long userId;
+
+    /**
+     * 站点ID
+     */
+    @TableField("site_id")
+    private Long siteId;
     
     /**
      * 创建时间
@@ -56,4 +62,11 @@ public class AssetFolder {
      */
     @TableLogic
     private Integer deleted;
+
+    /**
+     * 文件夹缩略图（非数据库字段）
+     * 取文件夹内最新的一张图片的缩略图或URL
+     */
+    @TableField(exist = false)
+    private String thumbnail;
 }

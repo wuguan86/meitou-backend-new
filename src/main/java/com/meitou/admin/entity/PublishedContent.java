@@ -56,7 +56,8 @@ public class PublishedContent {
      */
     @TableField("generation_type")
     private String generationType;
-    
+
+
     /**
      * 内容URL
      */
@@ -64,7 +65,7 @@ public class PublishedContent {
     private String contentUrl;
     
     /**
-     * 缩略图URL
+     * 缩略图URL或者静态封面图
      */
     private String thumbnail;
     

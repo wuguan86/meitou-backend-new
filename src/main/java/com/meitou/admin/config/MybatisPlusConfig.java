@@ -81,27 +81,11 @@ public class MybatisPlusConfig {
             if (tableName != null && tableName.startsWith("backend_")) {
                 return true;
             }
-            // 支付配置表不需要多租户过滤（全局配置）
-            if ("payment_configs".equals(tableName)) {
-                return true;
-            }
-            // API平台表和接口表不需要多租户过滤（可以为NULL表示通用）
-            if ("api_platforms".equals(tableName) || "api_interfaces".equals(tableName)) {
-                return true;
-            }
-            // 充值订单表不需要多租户过滤（通过user_id关联，user表已有site_id）
-            if ("recharge_orders".equals(tableName)) {
-                return true;
-            }
-            // 资产文件夹表不需要多租户过滤（通过user_id关联）
-            if ("asset_folders".equals(tableName)) {
-                return true;
-            }
-            // 站点表本身不需要多租户过滤
+            // 站点表不需要多租户过滤
             if ("sites".equals(tableName)) {
                 return true;
             }
-            // 其他表需要多租户过滤
+            
             return false;
         }
     }

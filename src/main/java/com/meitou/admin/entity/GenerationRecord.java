@@ -43,6 +43,30 @@ public class GenerationRecord {
      * 提示词
      */
     private String prompt;
+
+    /**
+     * 是否发布：0-否，1-是
+     */
+    @TableField("is_publish")
+    private String isPublish;
+
+    /**
+     * 文件类型：image-图片，video-视频
+     */
+    @TableField("file_type")
+    private String fileType;
+
+    /**
+     * 缩略图URL
+     */
+    @TableField("thumbnail_url")
+    private String thumbnailUrl;
+
+    /**
+     * 生成参数（JSON格式）
+     */
+    @TableField("generation_params")
+    private String generationParams;
     
     /**
      * 消耗积分

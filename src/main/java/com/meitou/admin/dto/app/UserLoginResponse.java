@@ -1,5 +1,6 @@
 package com.meitou.admin.dto.app;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -42,5 +43,21 @@ public class UserLoginResponse {
      * 站点ID（多租户字段）
      */
     private Long siteId;
-}
 
+    private String avatarUrl;
+
+    private String company;
+
+    private String wechat;
+
+    /**
+     * 是否是新用户（true-是，false-否）
+     */
+    @JsonProperty("isNewUser")
+    private boolean isNewUser;
+
+    /**
+     * 注册时间
+     */
+    private String createdAt;
+}

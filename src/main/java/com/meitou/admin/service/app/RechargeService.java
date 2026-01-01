@@ -3,10 +3,13 @@ package com.meitou.admin.service.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meitou.admin.common.SiteContext;
 import com.meitou.admin.dto.app.*;
 import com.meitou.admin.entity.PaymentConfig;
 import com.meitou.admin.entity.RechargeOrder;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.PaymentConfigMapper;
 import com.meitou.admin.mapper.RechargeOrderMapper;
 import com.meitou.admin.mapper.UserMapper;
@@ -50,7 +53,7 @@ public class RechargeService {
         // 查询用户
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 获取充值配置（多租户插件会自动过滤当前站点）
@@ -58,7 +61,7 @@ public class RechargeService {
         
         // 验证金额（使用配置的最低金额）
         if (request.getAmount().compareTo(BigDecimal.valueOf(config.getMinAmount())) < 0) {
-            throw new RuntimeException("充值金额不能低于" + config.getMinAmount() + "元");
+            throw new BusinessException(ErrorCode.RECHARGE_AMOUNT_INVALID.getCode(), "充值金额不能低于" + config.getMinAmount() + "元");
         }
         
         // 计算算力（根据配置的兑换比例）
@@ -84,7 +87,7 @@ public class RechargeService {
         // 获取支付配置
         PaymentConfig paymentConfig = getPaymentConfig(request.getPaymentType());
         if (paymentConfig == null || !paymentConfig.getIsEnabled()) {
-            throw new RuntimeException("支付方式未启用");
+            throw new BusinessException(ErrorCode.PAYMENT_METHOD_DISABLED);
         }
         
         // 调用支付接口获取支付参数
@@ -105,11 +108,14 @@ public class RechargeService {
                     paymentConfig.getConfigJson()
                 );
             } else {
-                throw new RuntimeException("不支持的支付方式");
+                throw new BusinessException(ErrorCode.PAYMENT_METHOD_NOT_SUPPORTED);
             }
         } catch (Exception e) {
             log.error("创建支付订单失败", e);
-            throw new RuntimeException("创建支付订单失败：" + e.getMessage());
+            if (e instanceof BusinessException) {
+                throw (BusinessException) e;
+            }
+            throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "创建支付订单失败：" + e.getMessage());
         }
         
         // 更新订单状态为支付中
@@ -143,6 +149,9 @@ public class RechargeService {
      */
     @Transactional
     public boolean handlePaymentCallback(String paymentType, Map<String, String> callbackData) {
+        // 保存原始站点ID（虽然回调通常没有上下文，但为了安全起见）
+        Long originalSiteId = SiteContext.getSiteId();
+        
         try {
             // 获取订单号
             String orderNo = callbackData.get("out_trade_no");
@@ -151,15 +160,19 @@ public class RechargeService {
                 return false;
             }
             
-            // 查询订单
-            LambdaQueryWrapper<RechargeOrder> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(RechargeOrder::getOrderNo, orderNo);
-            wrapper.eq(RechargeOrder::getDeleted, 0);
-            RechargeOrder order = rechargeOrderMapper.selectOne(wrapper);
+            // 查询订单（使用忽略多租户过滤的方法，因为回调没有上下文）
+            // 原来的 selectOne 会加上 site_id = 0 的条件，导致查不到订单
+            RechargeOrder order = rechargeOrderMapper.selectByOrderNo(orderNo);
             
             if (order == null) {
                 log.error("订单不存在：{}", orderNo);
                 return false;
+            }
+            
+            // 关键：设置当前线程的 SiteContext
+            // 否则后续的 updateById 和用户余额更新会因为多租户过滤而失败
+            if (order.getSiteId() != null) {
+                SiteContext.setSiteId(order.getSiteId());
             }
             
             // 如果订单已经是已支付状态，直接返回成功（幂等处理）
@@ -230,6 +243,13 @@ public class RechargeService {
         } catch (Exception e) {
             log.error("处理支付回调失败", e);
             return false;
+        } finally {
+            // 恢复上下文
+            if (originalSiteId != null) {
+                SiteContext.setSiteId(originalSiteId);
+            } else {
+                SiteContext.clear();
+            }
         }
     }
     
@@ -248,7 +268,7 @@ public class RechargeService {
         RechargeOrder order = rechargeOrderMapper.selectOne(wrapper);
         
         if (order == null) {
-            throw new RuntimeException("订单不存在");
+            throw new BusinessException(ErrorCode.RECORD_NOT_FOUND.getCode(), "订单不存在");
         }
         
         OrderQueryResponse response = new OrderQueryResponse();
@@ -279,12 +299,12 @@ public class RechargeService {
         RechargeOrder order = rechargeOrderMapper.selectOne(wrapper);
         
         if (order == null) {
-            throw new RuntimeException("订单不存在");
+            throw new BusinessException(ErrorCode.RECORD_NOT_FOUND.getCode(), "订单不存在");
         }
         
         // 仅允许取消待支付订单
         if (!"pending".equals(order.getStatus()) && !"paying".equals(order.getStatus())) {
-            throw new RuntimeException("只能取消待支付或支付中的订单");
+            throw new BusinessException(ErrorCode.ORDER_STATUS_INVALID.getCode(), "只能取消待支付或支付中的订单");
         }
         
         order.setStatus("cancelled");

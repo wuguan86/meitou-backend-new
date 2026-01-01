@@ -4,6 +4,8 @@ import com.meitou.admin.annotation.SiteScope;
 import com.meitou.admin.common.Result;
 import com.meitou.admin.entity.InvitationCode;
 import com.meitou.admin.service.admin.InvitationCodeService;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,24 +24,27 @@ public class InvitationController {
     private final InvitationCodeService codeService;
     
     /**
-     * 获取邀请码列表（按站点ID）
+     * 获取邀请码列表（支持分页、搜索）
      * 
-     * @param siteId 站点ID（可选，如果不提供则返回所有站点的邀请码）
+     * @param siteId 站点ID
+     * @param page 页码
+     * @param size 每页大小
+     * @param code 邀请码
+     * @param channel 渠道
+     * @param status 状态
      * @return 邀请码列表
      */
     @GetMapping
-    @SiteScope(required = false) // 使用 AOP 自动处理 SiteContext，siteId 不是必填
-    public Result<List<InvitationCode>> getCodes(@RequestParam(required = false) Long siteId) {
-        List<InvitationCode> codes;
-        if (siteId != null) {
-            // SiteContext 已由 @SiteScope 注解自动设置
-            codes = codeService.getCodesBySiteId(siteId);
-        } else {
-            // 如果没有指定 siteId，清除 SiteContext，让多租户插件不添加过滤条件
-            // 但 invitation_codes 表需要多租户过滤，所以应该总是指定 siteId
-            codes = codeService.getCodes();
-        }
-        return Result.success(codes);
+    @SiteScope(required = false)
+    public Result<IPage<InvitationCode>> getCodes(
+            @RequestParam(value = "siteId", required = false) Long siteId,
+            @RequestParam(value = "page", defaultValue = "1") Integer page,
+            @RequestParam(value = "size", defaultValue = "10") Integer size,
+            @RequestParam(value = "code", required = false) String code,
+            @RequestParam(value = "channel", required = false) String channel,
+            @RequestParam(value = "status", required = false) String status) {
+        
+        return Result.success(codeService.getPage(new Page<>(page, size), code, channel, status));
     }
     
     /**
@@ -82,6 +87,18 @@ public class InvitationController {
     public Result<InvitationCode> updateCode(@PathVariable Long id, @RequestBody InvitationCode code) {
         InvitationCode updated = codeService.updateCode(id, code);
         return Result.success("更新成功", updated);
+    }
+
+    /**
+     * 删除邀请码
+     * 
+     * @param id 邀请码ID
+     * @return 结果
+     */
+    @DeleteMapping("/{id}")
+    public Result<Void> deleteCode(@PathVariable Long id) {
+        codeService.deleteCode(id);
+        return Result.success("删除成功", null);
     }
 }
 

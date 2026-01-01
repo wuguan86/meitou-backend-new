@@ -3,6 +3,7 @@ package com.meitou.admin.service.admin;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.MarketingAd;
+import com.meitou.admin.exception.BusinessException;
 import com.meitou.admin.mapper.MarketingAdMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -78,6 +79,7 @@ public class MarketingAdService extends ServiceImpl<MarketingAdMapper, Marketing
      * @return 创建的广告
      */
     public MarketingAd createAd(MarketingAd ad) {
+        checkPositionDuplicate(ad.getSiteId(), ad.getPosition(), null);
         adMapper.insert(ad);
         return ad;
     }
@@ -102,7 +104,12 @@ public class MarketingAdService extends ServiceImpl<MarketingAdMapper, Marketing
         if (ad.getSummary() != null) existing.setSummary(ad.getSummary());
         if (ad.getTags() != null) existing.setTags(ad.getTags());
         if (ad.getIsActive() != null) existing.setIsActive(ad.getIsActive());
-        if (ad.getPosition() != null) existing.setPosition(ad.getPosition());
+        if (ad.getPosition() != null) {
+            if (!ad.getPosition().equals(existing.getPosition())) {
+                checkPositionDuplicate(existing.getSiteId(), ad.getPosition(), id);
+            }
+            existing.setPosition(ad.getPosition());
+        }
         if (ad.getIsFullScreen() != null) existing.setIsFullScreen(ad.getIsFullScreen());
         
         adMapper.updateById(existing);
@@ -131,6 +138,28 @@ public class MarketingAdService extends ServiceImpl<MarketingAdMapper, Marketing
     public void deleteAd(Long id) {
         getAdById(id);
         adMapper.deleteById(id);
+    }
+
+    /**
+     * 检查广告位位置是否重复
+     * 
+     * @param siteId 站点ID
+     * @param position 广告位位置
+     * @param excludeId 排除的广告ID（更新时使用）
+     */
+    private void checkPositionDuplicate(Long siteId, Integer position, Long excludeId) {
+        if (siteId == null || position == null) {
+            return;
+        }
+        LambdaQueryWrapper<MarketingAd> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(MarketingAd::getSiteId, siteId);
+        wrapper.eq(MarketingAd::getPosition, position);
+        if (excludeId != null) {
+            wrapper.ne(MarketingAd::getId, excludeId);
+        }
+        if (adMapper.selectCount(wrapper) > 0) {
+            throw new BusinessException("该站点广告位位置 " + position + " 已存在，不能重复");
+        }
     }
 }
 

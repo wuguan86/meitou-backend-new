@@ -4,14 +4,23 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.meitou.admin.common.Constants;
 import com.meitou.admin.common.SiteContext;
 import com.meitou.admin.dto.app.CodeLoginRequest;
+import com.meitou.admin.dto.app.PasswordLoginRequest;
 import com.meitou.admin.dto.app.UserLoginResponse;
 import com.meitou.admin.entity.InvitationCode;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.InvitationCodeMapper;
 import com.meitou.admin.mapper.UserMapper;
+import com.meitou.admin.util.PasswordValidator;
+import com.meitou.admin.util.TokenUtil;
+import com.meitou.admin.service.common.LoginAttemptService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -25,6 +34,10 @@ public class AuthAppService {
     private final UserMapper userMapper;
     private final InvitationCodeMapper invitationCodeMapper;
     private final SmsCodeService smsCodeService;
+    private final BCryptPasswordEncoder passwordEncoder;
+    private final LoginAttemptService loginAttemptService;
+
+    private static final String NO_PASSWORD_PLACEHOLDER = "NO_PASSWORD_CODE_LOGIN";
     
     /**
      * 验证码登录
@@ -37,7 +50,7 @@ public class AuthAppService {
     public UserLoginResponse loginByCode(CodeLoginRequest request) {
         // 验证验证码
         if (!smsCodeService.verifyCode(request.getPhone(), request.getCode())) {
-            throw new RuntimeException("验证码错误或已过期");
+            throw new BusinessException(ErrorCode.VERIFY_CODE_ERROR);
         }
         
         // 查询用户是否存在
@@ -46,18 +59,30 @@ public class AuthAppService {
         wrapper.eq(User::getDeleted, 0);
         User user = userMapper.selectOne(wrapper);
         
+        boolean isNewUser = false;
+
         // 如果用户不存在，自动注册
         if (user == null) {
             user = createNewUser(request.getPhone(), request.getInvitationCode());
+            isNewUser = true;
         } else {
             // 检查用户状态
             if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
-                throw new RuntimeException("账号已被停用");
+                throw new BusinessException(ErrorCode.ACCOUNT_DISABLED);
+            }
+            // 如果用户已存在且尝试使用邀请码，提示无效
+            if (request.getInvitationCode() != null && !request.getInvitationCode().trim().isEmpty()) {
+                throw new BusinessException(ErrorCode.INVITATION_CODE_INVALID.getCode(), "无效的邀请码：仅限新用户使用");
+            }
+            
+            // 如果用户存在但密码是默认值（说明之前未设置密码），也视为新用户处理
+            if (NO_PASSWORD_PLACEHOLDER.equals(user.getPassword())) {
+                isNewUser = true;
             }
         }
         
-        // 生成Token（实际项目中应使用JWT）
-        String token = generateToken(user.getId());
+        // 生成Token (JWT)
+        String token = TokenUtil.generateToken(user.getId(), "user");
         
         // 构建响应
         UserLoginResponse response = new UserLoginResponse();
@@ -67,8 +92,64 @@ public class AuthAppService {
         response.setPhone(user.getPhone());
         response.setEmail(user.getEmail());
         response.setBalance(user.getBalance() != null ? user.getBalance() : 0);
-        response.setSiteId(user.getSiteId()); // 设置站点ID
+        response.setSiteId(user.getSiteId());
+        response.setAvatarUrl(user.getAvatarUrl());
+        response.setCompany(user.getCompany());
+        response.setWechat(user.getWechat());
+        response.setNewUser(isNewUser);
+        if (user.getCreatedAt() != null) {
+            response.setCreatedAt(user.getCreatedAt().toString());
+        }
         
+        return response;
+    }
+
+    public UserLoginResponse loginByPassword(PasswordLoginRequest request) {
+        // 检查账号是否被锁定
+        if (loginAttemptService.isLocked(request.getPhone())) {
+            throw new BusinessException(ErrorCode.ACCOUNT_LOCKED);
+        }
+
+        LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(User::getPhone, request.getPhone());
+        wrapper.eq(User::getDeleted, 0);
+        User user = userMapper.selectOne(wrapper);
+
+        if (user == null) {
+            throw new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND.getCode(), "账号不存在，请使用验证码登录注册");
+        }
+        if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
+            throw new BusinessException(ErrorCode.ACCOUNT_DISABLED);
+        }
+        if (user.getPassword() == null || NO_PASSWORD_PLACEHOLDER.equals(user.getPassword())) {
+            throw new BusinessException(ErrorCode.NOT_SET_PASSWORD.getCode(), "尚未设置密码，请使用验证码登录后设置密码");
+        }
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            loginAttemptService.loginFailed(request.getPhone());
+            throw new BusinessException(ErrorCode.PASSWORD_ERROR);
+        }
+        
+        // 登录成功，重置失败次数
+        loginAttemptService.loginSucceeded(request.getPhone());
+
+        String token = TokenUtil.generateToken(user.getId(), "user");
+
+        UserLoginResponse response = new UserLoginResponse();
+        response.setToken(token);
+        response.setUserId(user.getId());
+        response.setUsername(user.getUsername());
+        response.setPhone(user.getPhone());
+        response.setEmail(user.getEmail());
+        response.setBalance(user.getBalance() != null ? user.getBalance() : 0);
+        response.setSiteId(user.getSiteId());
+        response.setAvatarUrl(user.getAvatarUrl());
+        response.setCompany(user.getCompany());
+        response.setWechat(user.getWechat());
+        response.setNewUser(false);
+        if (user.getCreatedAt() != null) {
+            response.setCreatedAt(user.getCreatedAt().toString());
+        }
+
         return response;
     }
     
@@ -93,7 +174,7 @@ public class AuthAppService {
         user.setEmail(phone + "@meitou.com");
         // 密码设置为默认值（数据库要求NOT NULL，验证码登录无需密码）
         // 使用一个默认的占位符，实际验证码登录不需要验证密码
-        user.setPassword("NO_PASSWORD_CODE_LOGIN");
+        user.setPassword(NO_PASSWORD_PLACEHOLDER);
         user.setRole("user"); // 默认角色
         user.setBalance(0); // 默认积分为0
         user.setStatus(Constants.USER_STATUS_ACTIVE); // 默认状态为正常
@@ -126,13 +207,31 @@ public class AuthAppService {
         wrapper.eq(InvitationCode::getStatus, "active"); // 状态为激活
         InvitationCode invitationCode = invitationCodeMapper.selectOne(wrapper);
         
-        if (invitationCode != null) {
-            // 增加邀请码使用次数
-            invitationCode.setUsedCount(invitationCode.getUsedCount() + 1);
-            invitationCodeMapper.updateById(invitationCode);
-            
-            // 可以根据邀请码配置给新用户赠送积分等
-            // 这里可以根据业务需求扩展
+        if (invitationCode == null) {
+            throw new BusinessException(ErrorCode.INVITATION_CODE_INVALID);
+        }
+
+        // 检查有效期
+        LocalDate now = LocalDate.now();
+        if (invitationCode.getValidStartDate() != null && now.isBefore(invitationCode.getValidStartDate())) {
+            throw new BusinessException(ErrorCode.INVITATION_CODE_INVALID.getCode(), "邀请码尚未生效");
+        }
+        if (invitationCode.getValidEndDate() != null && now.isAfter(invitationCode.getValidEndDate())) {
+            throw new BusinessException(ErrorCode.INVITATION_CODE_INVALID.getCode(), "邀请码已过期");
+        }
+
+        // 检查使用次数
+        if (invitationCode.getMaxUses() != null && invitationCode.getUsedCount() >= invitationCode.getMaxUses()) {
+            throw new BusinessException(ErrorCode.INVITATION_CODE_INVALID.getCode(), "邀请码已达到最大使用次数");
+        }
+
+        // 增加邀请码使用次数
+        invitationCode.setUsedCount(invitationCode.getUsedCount() + 1);
+        invitationCodeMapper.updateById(invitationCode);
+        
+        // 给新用户赠送积分
+        if (invitationCode.getPoints() != null && invitationCode.getPoints() > 0) {
+            user.setBalance(user.getBalance() + invitationCode.getPoints());
         }
     }
     
@@ -161,19 +260,126 @@ public class AuthAppService {
         response.setEmail(user.getEmail());
         response.setBalance(user.getBalance() != null ? user.getBalance() : 0);
         response.setSiteId(user.getSiteId()); // 设置站点ID
+        response.setAvatarUrl(user.getAvatarUrl());
+        response.setCompany(user.getCompany());
+        response.setWechat(user.getWechat());
+        if (user.getCreatedAt() != null) {
+            response.setCreatedAt(user.getCreatedAt().toString());
+        }
         
         return response;
     }
     
     /**
-     * 生成Token（实际项目中应使用JWT）
+     * 设置密码
      * 
      * @param userId 用户ID
-     * @return Token
+     * @param password 新密码
      */
-    private String generateToken(Long userId) {
-        // 简单实现：实际项目中应使用JWT生成Token
-        return "app_token_" + userId + "_" + System.currentTimeMillis();
+    @Transactional
+    public void setPassword(Long userId, String password) {
+        if (!PasswordValidator.validate(password)) {
+            throw new BusinessException(ErrorCode.PASSWORD_TOO_WEAK);
+        }
+        
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        
+        // 加密密码
+        String encodedPassword = passwordEncoder.encode(password);
+        user.setPassword(encodedPassword);
+        user.setUpdatedAt(LocalDateTime.now());
+        
+        userMapper.updateById(user);
+    }
+
+    @Transactional
+    public UserLoginResponse updateProfile(Long userId, String email, String username, String company) {
+        User user = userMapper.selectById(userId);
+        if (user == null || user.getDeleted() == 1) {
+            throw new RuntimeException("用户不存在");
+        }
+        if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
+            throw new RuntimeException("账号已被停用");
+        }
+
+        if (email != null && !email.trim().isEmpty()) {
+            String normalizedEmail = email.trim();
+            LambdaQueryWrapper<User> emailWrapper = new LambdaQueryWrapper<>();
+            emailWrapper.eq(User::getEmail, normalizedEmail);
+            emailWrapper.eq(User::getDeleted, 0);
+            emailWrapper.ne(User::getId, userId);
+            User existingUser = userMapper.selectOne(emailWrapper);
+            if (existingUser != null) {
+                throw new RuntimeException("邮箱已被占用");
+            }
+            user.setEmail(normalizedEmail);
+        }
+
+        if (username != null && !username.trim().isEmpty()) {
+            user.setUsername(username.trim());
+        }
+        if (company != null) {
+            user.setCompany(company.trim());
+        }
+        user.setUpdatedAt(LocalDateTime.now());
+        userMapper.updateById(user);
+
+        return getCurrentUser(userId);
+    }
+
+    @Transactional
+    public void updateAvatarUrl(Long userId, String avatarUrl) {
+        User user = userMapper.selectById(userId);
+        if (user == null || user.getDeleted() == 1) {
+            throw new RuntimeException("用户不存在");
+        }
+        if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
+            throw new RuntimeException("账号已被停用");
+        }
+        user.setAvatarUrl(avatarUrl);
+        user.setUpdatedAt(LocalDateTime.now());
+        userMapper.updateById(user);
+    }
+
+    @Transactional
+    public void changePassword(Long userId, String oldPassword, String newPassword, String code) {
+        User user = userMapper.selectById(userId);
+        if (user == null || user.getDeleted() == 1) {
+            throw new RuntimeException("用户不存在");
+        }
+        if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
+            throw new RuntimeException("账号已被停用");
+        }
+        if (newPassword == null || newPassword.trim().isEmpty()) {
+            throw new RuntimeException("新密码不能为空");
+        }
+        if (!PasswordValidator.validate(newPassword)) {
+            throw new BusinessException(ErrorCode.PASSWORD_TOO_WEAK);
+        }
+
+        // 如果提供了验证码，优先使用验证码验证
+        if (code != null && !code.trim().isEmpty()) {
+            if (!smsCodeService.verifyCode(user.getPhone(), code)) {
+                throw new BusinessException(ErrorCode.VERIFY_CODE_ERROR);
+            }
+        } else {
+            // 否则使用旧密码验证
+            boolean hasRealPassword = user.getPassword() != null && !NO_PASSWORD_PLACEHOLDER.equals(user.getPassword());
+            if (hasRealPassword) {
+                if (oldPassword == null || oldPassword.trim().isEmpty()) {
+                    throw new RuntimeException("旧密码不能为空");
+                }
+                if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
+                    throw new RuntimeException("旧密码错误");
+                }
+            }
+        }
+
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setUpdatedAt(LocalDateTime.now());
+        userMapper.updateById(user);
     }
 }
-

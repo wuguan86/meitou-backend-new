@@ -2,6 +2,7 @@ package com.meitou.admin.service.app;
 
 import com.alipay.api.AlipayApiException;
 import com.alipay.api.AlipayClient;
+import com.alipay.api.CertAlipayRequest;
 import com.alipay.api.DefaultAlipayClient;
 import com.alipay.api.domain.AlipayTradePrecreateModel;
 import com.alipay.api.request.AlipayTradePrecreateRequest;
@@ -15,6 +16,9 @@ import com.github.binarywang.wxpay.service.WxPayService;
 import com.github.binarywang.wxpay.service.impl.WxPayServiceImpl;
 import com.github.binarywang.wxpay.exception.WxPayException;
 import com.meitou.admin.config.PaymentProperties;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
+import com.meitou.admin.util.AesEncryptUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
@@ -62,7 +66,21 @@ public class PaymentService {
             wxPayConfig.setMchKey(config.getMchKey());
             wxPayConfig.setUseSandboxEnv(config.getUseSandbox());
             
-            // 如果有证书路径，加载证书
+            // API V3配置
+            if (StringUtils.hasText(config.getApiV3Key())) {
+                wxPayConfig.setApiV3Key(config.getApiV3Key());
+            }
+            if (StringUtils.hasText(config.getCertSerialNo())) {
+                wxPayConfig.setCertSerialNo(config.getCertSerialNo());
+            }
+            if (StringUtils.hasText(config.getCertContent())) {
+                wxPayConfig.setPrivateCertContent(config.getCertContent().getBytes(StandardCharsets.UTF_8));
+            }
+            if (StringUtils.hasText(config.getPrivateKey())) {
+                wxPayConfig.setPrivateKeyContent(config.getPrivateKey().getBytes(StandardCharsets.UTF_8));
+            }
+            
+            // 兼容旧版证书路径配置
             if (StringUtils.hasText(config.getCertPath())) {
                 try {
                     ClassPathResource resource = new ClassPathResource(config.getCertPath().replace("classpath:", ""));
@@ -70,7 +88,7 @@ public class PaymentService {
                         wxPayConfig.setKeyPath(resource.getFile().getAbsolutePath());
                     }
                 } catch (Exception e) {
-                    log.warn("加载微信支付证书失败，将使用非证书方式：{}", e.getMessage());
+                    log.warn("加载微信支付证书文件失败，将尝试使用内容配置：{}", e.getMessage());
                 }
             }
             
@@ -93,21 +111,8 @@ public class PaymentService {
             // 构建返回结果
             Map<String, String> paymentParams = new HashMap<>();
             
-            // 微信支付扫码支付返回的二维码URL，使用反射获取codeUrl字段（不同版本的SDK方法名可能不同）
-            String codeUrl = null;
-            try {
-                // 尝试调用getCodeUrl方法
-                java.lang.reflect.Method method = result.getClass().getMethod("getCodeUrl");
-                codeUrl = (String) method.invoke(result);
-            } catch (Exception e) {
-                try {
-                    // 尝试调用getCode_url方法（下划线格式）
-                    java.lang.reflect.Method method = result.getClass().getMethod("getCode_url");
-                    codeUrl = (String) method.invoke(result);
-                } catch (Exception e2) {
-                    log.warn("无法通过反射获取二维码URL，可能需要查看微信支付SDK文档", e2);
-                }
-            }
+            // 微信支付扫码支付返回的二维码URL
+            String codeUrl = result.getCodeURL();
             
             paymentParams.put("qrCodeUrl", codeUrl != null ? codeUrl : ""); // 二维码URL
             paymentParams.put("orderId", result.getPrepayId() != null ? result.getPrepayId() : ""); // 微信支付订单号
@@ -118,10 +123,10 @@ public class PaymentService {
             
         } catch (WxPayException e) {
             log.error("创建微信支付订单失败，错误码：{}, 错误信息：{}", e.getErrCode(), e.getMessage(), e);
-            throw new RuntimeException("创建微信支付订单失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "创建微信支付订单失败：" + e.getMessage());
         } catch (Exception e) {
             log.error("创建微信支付订单失败", e);
-            throw new RuntimeException("创建微信支付订单失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "创建微信支付订单失败：" + e.getMessage());
         }
     }
     
@@ -141,16 +146,40 @@ public class PaymentService {
             // 解析配置（优先使用传入的configJson，否则使用application.yml中的配置）
             PaymentProperties.AlipayConfig config = parseAlipayConfig(configJson);
             
-            // 创建支付宝客户端
-            AlipayClient alipayClient = new DefaultAlipayClient(
-                config.getGatewayUrl(), // 支付宝网关地址
-                config.getAppId(), // 应用ID
-                config.getPrivateKey(), // 商户私钥
-                config.getFormat(), // 数据格式
-                config.getCharset(), // 字符编码
-                config.getAlipayPublicKey(), // 支付宝公钥
-                config.getSignType() // 签名类型
-            );
+            AlipayClient alipayClient;
+            
+            // 检查是否使用证书模式
+            if (StringUtils.hasText(config.getAppCertContent()) && 
+                StringUtils.hasText(config.getAlipayRootCertContent()) && 
+                StringUtils.hasText(config.getAlipayCertContent())) {
+                
+                log.info("使用证书模式初始化支付宝客户端");
+                CertAlipayRequest certParams = new CertAlipayRequest();
+                certParams.setServerUrl(config.getGatewayUrl());
+                certParams.setAppId(config.getAppId());
+                certParams.setPrivateKey(config.getPrivateKey());
+                certParams.setFormat(config.getFormat());
+                certParams.setCharset(config.getCharset());
+                certParams.setSignType(config.getSignType());
+                
+                certParams.setCertContent(config.getAppCertContent());
+                certParams.setRootCertContent(config.getAlipayRootCertContent());
+                certParams.setAlipayPublicCertContent(config.getAlipayCertContent());
+                
+                alipayClient = new DefaultAlipayClient(certParams);
+            } else {
+                // 普通公钥模式
+                log.info("使用公钥模式初始化支付宝客户端");
+                alipayClient = new DefaultAlipayClient(
+                    config.getGatewayUrl(), // 支付宝网关地址
+                    config.getAppId(), // 应用ID
+                    config.getPrivateKey(), // 商户私钥
+                    config.getFormat(), // 数据格式
+                    config.getCharset(), // 字符编码
+                    config.getAlipayPublicKey(), // 支付宝公钥
+                    config.getSignType() // 签名类型
+                );
+            }
             
             // 构建请求参数（使用扫码支付）
             AlipayTradePrecreateRequest request = new AlipayTradePrecreateRequest();
@@ -167,7 +196,7 @@ public class PaymentService {
             
             if (!response.isSuccess()) {
                 log.error("创建支付宝支付订单失败，错误码：{}, 错误信息：{}", response.getCode(), response.getMsg());
-                throw new RuntimeException("创建支付宝支付订单失败：" + response.getMsg());
+                throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "创建支付宝支付订单失败：" + response.getMsg());
             }
             
             // 构建返回结果
@@ -181,10 +210,11 @@ public class PaymentService {
             
         } catch (AlipayApiException e) {
             log.error("创建支付宝支付订单失败，错误码：{}, 错误信息：{}", e.getErrCode(), e.getErrMsg(), e);
-            throw new RuntimeException("创建支付宝支付订单失败：" + e.getErrMsg());
+            // 避免将详细的技术错误暴露给用户
+            throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "支付宝下单失败，请稍后重试或联系客服");
         } catch (Exception e) {
             log.error("创建支付宝支付订单失败", e);
-            throw new RuntimeException("创建支付宝支付订单失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.PAYMENT_ORDER_CREATE_FAILED.getCode(), "支付系统异常，请稍后重试");
         }
     }
     
@@ -420,8 +450,13 @@ public class PaymentService {
                 config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getWechat().getAppId());
                 config.setMchId(jsonNode.has("mchId") ? jsonNode.get("mchId").asText() : paymentProperties.getWechat().getMchId());
                 config.setMchKey(jsonNode.has("mchKey") ? jsonNode.get("mchKey").asText() : paymentProperties.getWechat().getMchKey());
-                config.setApiV3Key(jsonNode.has("apiV3Key") ? jsonNode.get("apiV3Key").asText() : paymentProperties.getWechat().getApiV3Key());
+                
+                // 敏感字段解密
+                config.setApiV3Key(jsonNode.has("apiV3Key") ? tryDecrypt(jsonNode.get("apiV3Key").asText()) : paymentProperties.getWechat().getApiV3Key());
                 config.setCertSerialNo(jsonNode.has("certSerialNo") ? jsonNode.get("certSerialNo").asText() : paymentProperties.getWechat().getCertSerialNo());
+                config.setPrivateKey(jsonNode.has("privateKey") ? tryDecrypt(jsonNode.get("privateKey").asText()) : paymentProperties.getWechat().getPrivateKey());
+                config.setCertContent(jsonNode.has("certContent") ? tryDecrypt(jsonNode.get("certContent").asText()) : paymentProperties.getWechat().getCertContent());
+                
                 config.setCertPath(jsonNode.has("certPath") ? jsonNode.get("certPath").asText() : paymentProperties.getWechat().getCertPath());
                 config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getWechat().getNotifyUrl());
                 config.setUseSandbox(jsonNode.has("useSandbox") ? jsonNode.get("useSandbox").asBoolean() : paymentProperties.getWechat().getUseSandbox());
@@ -449,8 +484,14 @@ public class PaymentService {
             try {
                 JsonNode jsonNode = objectMapper.readTree(configJson);
                 config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getAlipay().getAppId());
-                config.setPrivateKey(jsonNode.has("privateKey") ? jsonNode.get("privateKey").asText() : paymentProperties.getAlipay().getPrivateKey());
-                config.setAlipayPublicKey(jsonNode.has("alipayPublicKey") ? jsonNode.get("alipayPublicKey").asText() : paymentProperties.getAlipay().getAlipayPublicKey());
+                
+                // 敏感字段解密
+                config.setPrivateKey(jsonNode.has("privateKey") ? tryDecrypt(jsonNode.get("privateKey").asText()) : paymentProperties.getAlipay().getPrivateKey());
+                config.setAlipayPublicKey(jsonNode.has("alipayPublicKey") ? tryDecrypt(jsonNode.get("alipayPublicKey").asText()) : paymentProperties.getAlipay().getAlipayPublicKey());
+                config.setAppCertContent(jsonNode.has("appCertContent") ? tryDecrypt(jsonNode.get("appCertContent").asText()) : paymentProperties.getAlipay().getAppCertContent());
+                config.setAlipayRootCertContent(jsonNode.has("alipayRootCertContent") ? tryDecrypt(jsonNode.get("alipayRootCertContent").asText()) : paymentProperties.getAlipay().getAlipayRootCertContent());
+                config.setAlipayCertContent(jsonNode.has("alipayCertContent") ? tryDecrypt(jsonNode.get("alipayCertContent").asText()) : paymentProperties.getAlipay().getAlipayCertContent());
+                
                 config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getAlipay().getNotifyUrl());
                 config.setReturnUrl(jsonNode.has("returnUrl") ? jsonNode.get("returnUrl").asText() : paymentProperties.getAlipay().getReturnUrl());
                 config.setGatewayUrl(jsonNode.has("gatewayUrl") ? jsonNode.get("gatewayUrl").asText() : paymentProperties.getAlipay().getGatewayUrl());
@@ -467,6 +508,24 @@ public class PaymentService {
         }
         
         return config;
+    }
+
+    /**
+     * 尝试解密敏感信息
+     * 如果解密失败（可能本来就是明文），则返回原值
+     */
+    private String tryDecrypt(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        try {
+            // 简单判断是否可能是加密字符串（通常AES加密后Base64编码的字符串不包含空格，长度是4的倍数等，但这里直接试着解密最稳妥）
+            String decrypted = AesEncryptUtil.decrypt(value);
+            return StringUtils.hasText(decrypted) ? decrypted : value;
+        } catch (Exception e) {
+            // 解密失败，可能是明文
+            return value;
+        }
     }
 }
 

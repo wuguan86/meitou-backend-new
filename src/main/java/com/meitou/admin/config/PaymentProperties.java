@@ -54,6 +54,16 @@ public class PaymentProperties {
          * 证书文件路径（.p12格式）
          */
         private String certPath;
+
+        /**
+         * API私钥内容（PEM格式）
+         */
+        private String privateKey;
+
+        /**
+         * API证书内容（PEM格式）
+         */
+        private String certContent;
         
         /**
          * 支付回调地址
@@ -82,6 +92,21 @@ public class PaymentProperties {
          * 支付宝公钥（用于验证回调签名）
          */
         private String alipayPublicKey;
+        
+        /**
+         * 应用公钥证书内容（PEM格式）
+         */
+        private String appCertContent;
+        
+        /**
+         * 支付宝根证书内容（PEM格式）
+         */
+        private String alipayRootCertContent;
+        
+        /**
+         * 支付宝公钥证书内容（PEM格式）
+         */
+        private String alipayCertContent;
         
         /**
          * 支付回调地址

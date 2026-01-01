@@ -1,353 +1,218 @@
 package com.meitou.admin.controller.app;
 
 import com.meitou.admin.common.Result;
-import com.meitou.admin.dto.app.ImageGenerationResponse;
-import com.meitou.admin.dto.app.ImageToImageRequest;
-import com.meitou.admin.dto.app.PlatformModelResponse;
-import com.meitou.admin.dto.app.TextToImageRequest;
-import com.meitou.admin.dto.app.TextToVideoRequest;
-import com.meitou.admin.dto.app.ImageToVideoRequest;
-import com.meitou.admin.dto.app.VideoGenerationResponse;
+import com.meitou.admin.dto.app.*;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.meitou.admin.entity.ApiPlatform;
+import com.meitou.admin.entity.GenerationRecord;
 import com.meitou.admin.service.admin.ApiPlatformService;
 import com.meitou.admin.service.app.GenerationService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * 用户端图片生成控制器
- * 处理文生图和图生图接口
+ * 用户端生成控制器
+ * 处理文生图、图生图等请求
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/app/generation")
 @RequiredArgsConstructor
 public class GenerationController {
-    
+
     private final GenerationService generationService;
     private final ApiPlatformService apiPlatformService;
-    
+
     /**
-     * 文生图接口
-     * 
+     * 获取用户生成记录
+     *
+     * @param page 页码
+     * @param size 每页数量
+     * @param type 类型筛选 (可选)
+     * @param userId 当前用户ID
+     * @return 记录分页
+     */
+    @GetMapping("/records")
+    public Result<Page<GenerationRecord>> getRecords(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String type,
+            @AuthenticationPrincipal Long userId) {
+        return Result.success(generationService.getUserGenerationRecords(userId, page, size, type));
+    }
+
+    /**
+     * 文生图
+     *
      * @param request 文生图请求
-     * @param token 用户Token（从请求头获取）
-     * @return 生成响应
+     * @param userId  当前用户ID
+     * @return 生成结果
      */
     @PostMapping("/text-to-image")
     public Result<ImageGenerationResponse> textToImage(
-            @Valid @RequestBody TextToImageRequest request,
-            @RequestHeader(value = "Authorization", required = false) String token
-    ) {
-        try {
-            // 从token获取用户ID
-            Long userId = getUserIdFromToken(token);
-            if (userId == null) {
-                return Result.error(401, "未登录或token无效");
-            }
-            
-            // 调用服务生成图片
-            ImageGenerationResponse response = generationService.generateTextToImage(request, userId);
-            return Result.success("生成成功", response);
-            
-        } catch (Exception e) {
-            return Result.error("生成失败：" + e.getMessage());
-        }
+            @RequestBody TextToImageRequest request,
+            @AuthenticationPrincipal Long userId) {
+        log.info("用户[{}]发起文生图请求: {}", userId, request.getPrompt());
+        ImageGenerationResponse response = generationService.generateTextToImage(request, userId);
+        return Result.success(response);
     }
-    
+
     /**
-     * 图生图接口
-     * 
+     * 图生图
+     *
      * @param request 图生图请求
-     * @param token 用户Token（从请求头获取）
-     * @return 生成响应
+     * @param userId  当前用户ID
+     * @return 生成结果
      */
     @PostMapping("/image-to-image")
     public Result<ImageGenerationResponse> imageToImage(
-            @Valid @RequestBody ImageToImageRequest request,
-            @RequestHeader(value = "Authorization", required = false) String token
-    ) {
-        try {
-            // 从token获取用户ID
-            Long userId = getUserIdFromToken(token);
-            if (userId == null) {
-                return Result.error(401, "未登录或token无效");
-            }
-            
-            // 调用服务生成图片
-            ImageGenerationResponse response = generationService.generateImageToImage(request, userId);
-            return Result.success("生成成功", response);
-            
-        } catch (Exception e) {
-            return Result.error("生成失败：" + e.getMessage());
-        }
+            @RequestBody ImageToImageRequest request,
+            @AuthenticationPrincipal Long userId) {
+        log.info("用户[{}]发起图生图请求: {}", userId, request.getPrompt());
+        ImageGenerationResponse response = generationService.generateImageToImage(request, userId);
+        return Result.success(response);
     }
-    
+
     /**
-     * 获取文生图平台的模型列表
-     * 根据type字段查找类型为txt2img的平台
-     * 
+     * 文生视频
+     *
+     * @param request 文生视频请求
+     * @param userId  当前用户ID
+     * @return 生成结果
+     */
+    @PostMapping("/text-to-video")
+    public Result<VideoGenerationResponse> textToVideo(
+            @RequestBody TextToVideoRequest request,
+            @AuthenticationPrincipal Long userId) {
+        log.info("用户[{}]发起文生视频请求: {}", userId, request.getPrompt());
+        VideoGenerationResponse response = generationService.generateTextToVideo(request, userId);
+        return Result.success(response);
+    }
+
+    /**
+     * 图生视频
+     *
+     * @param request 图生视频请求
+     * @param userId  当前用户ID
+     * @return 生成结果
+     */
+    @PostMapping("/image-to-video")
+    public Result<VideoGenerationResponse> imageToVideo(
+            @RequestBody ImageToVideoRequest request,
+            @AuthenticationPrincipal Long userId) {
+        // 注意：这里复用了TextToVideoRequest，实际可能需要ImageToVideoRequest，
+        // 但根据GenerationService实现，image-to-video也是用TextToVideoRequest (或类似结构)
+        // 检查GenerationService.generateImageToVideo的签名
+        // 发现GenerationService.generateImageToVideo(TextToVideoRequest request, Long userId)
+        // 确实是用TextToVideoRequest，其中包含imageUrl字段
+        log.info("用户[{}]发起图生视频请求: {}", userId, request.getPrompt());
+        VideoGenerationResponse response = generationService.generateImageToVideo(request, userId);
+        return Result.success(response);
+    }
+
+    /**
+     * 获取文生图模型列表
+     *
      * @return 平台模型列表
      */
     @GetMapping("/text-to-image/models")
     public Result<List<PlatformModelResponse>> getTextToImageModels() {
-        try {
-            // 根据类型获取所有启用的文生图平台（type=txt2img）
-            List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey("txt2img", null);
-            
-            List<PlatformModelResponse> responses = new ArrayList<>();
-            for (ApiPlatform platform : platforms) {
-                // 检查是否有支持的模型
-                if (platform.getSupportedModels() != null && !platform.getSupportedModels().trim().isEmpty()) {
-                    PlatformModelResponse response = new PlatformModelResponse();
-                    response.setPlatformId(platform.getId());
-                    response.setPlatformName(platform.getName());
-                    
-                    // 解析支持的模型（以#号分割）
-                    String[] modelIds = platform.getSupportedModels().split("#");
-                    List<PlatformModelResponse.ModelInfo> models = Arrays.stream(modelIds)
-                            .filter(id -> id != null && !id.trim().isEmpty())
-                            .map(id -> {
-                                PlatformModelResponse.ModelInfo modelInfo = new PlatformModelResponse.ModelInfo();
-                                modelInfo.setId(id.trim());
-                                // 默认使用模型ID作为显示名称，可以后续扩展
-                                modelInfo.setName(id.trim());
-                                return modelInfo;
-                            })
-                            .collect(Collectors.toList());
-                    
-                    response.setModels(models);
-                    responses.add(response);
-                }
-            }
-            
-            return Result.success(responses);
-        } catch (Exception e) {
-            return Result.error("获取模型列表失败：" + e.getMessage());
-        }
+        return Result.success(getModelsByType("txt2img"));
     }
-    
+
     /**
-     * 获取图生图平台的模型列表
-     * 根据type字段查找类型为img2img的平台
-     * 
+     * 获取图生图模型列表
+     *
      * @return 平台模型列表
      */
     @GetMapping("/image-to-image/models")
     public Result<List<PlatformModelResponse>> getImageToImageModels() {
-        try {
-            // 根据类型获取所有启用的图生图平台（type=img2img）
-            List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey("img2img", null);
-            
-            List<PlatformModelResponse> responses = new ArrayList<>();
-            for (ApiPlatform platform : platforms) {
-                // 检查是否有支持的模型
-                if (platform.getSupportedModels() != null && !platform.getSupportedModels().trim().isEmpty()) {
-                    PlatformModelResponse response = new PlatformModelResponse();
-                    response.setPlatformId(platform.getId());
-                    response.setPlatformName(platform.getName());
-                    
-                    // 解析支持的模型（以#号分割）
-                    String[] modelIds = platform.getSupportedModels().split("#");
-                    List<PlatformModelResponse.ModelInfo> models = Arrays.stream(modelIds)
-                            .filter(id -> id != null && !id.trim().isEmpty())
-                            .map(id -> {
-                                PlatformModelResponse.ModelInfo modelInfo = new PlatformModelResponse.ModelInfo();
-                                modelInfo.setId(id.trim());
-                                // 默认使用模型ID作为显示名称，可以后续扩展
-                                modelInfo.setName(id.trim());
-                                return modelInfo;
-                            })
-                            .collect(Collectors.toList());
-                    
-                    response.setModels(models);
-                    responses.add(response);
-                }
-            }
-            
-            return Result.success(responses);
-        } catch (Exception e) {
-            return Result.error("获取模型列表失败：" + e.getMessage());
-        }
+        return Result.success(getModelsByType("img2img"));
     }
-    
+
     /**
-     * 文生视频接口
-     * 
-     * @param request 文生视频请求
-     * @param token 用户Token（从请求头获取）
-     * @return 生成响应
-     */
-    @PostMapping("/text-to-video")
-    public Result<VideoGenerationResponse> textToVideo(
-            @Valid @RequestBody TextToVideoRequest request,
-            @RequestHeader(value = "Authorization", required = false) String token
-    ) {
-        try {
-            // 从token获取用户ID
-            Long userId = getUserIdFromToken(token);
-            if (userId == null) {
-                return Result.error(401, "未登录或token无效");
-            }
-            
-            // 调用服务生成视频
-            VideoGenerationResponse response = generationService.generateTextToVideo(request, userId);
-            return Result.success("生成成功", response);
-            
-        } catch (Exception e) {
-            return Result.error("生成失败：" + e.getMessage());
-        }
-    }
-    
-    /**
-     * 图生视频接口
-     * 
-     * @param request 图生视频请求
-     * @param token 用户Token（从请求头获取）
-     * @return 生成响应
-     */
-    @PostMapping("/image-to-video")
-    public Result<VideoGenerationResponse> imageToVideo(
-            @Valid @RequestBody ImageToVideoRequest request,
-            @RequestHeader(value = "Authorization", required = false) String token
-    ) {
-        try {
-            // 从token获取用户ID
-            Long userId = getUserIdFromToken(token);
-            if (userId == null) {
-                return Result.error(401, "未登录或token无效");
-            }
-            
-            // 调用服务生成视频
-            VideoGenerationResponse response = generationService.generateImageToVideo(request, userId);
-            return Result.success("生成成功", response);
-            
-        } catch (Exception e) {
-            return Result.error("生成失败：" + e.getMessage());
-        }
-    }
-    
-    /**
-     * 获取文生视频平台的模型列表
-     * 根据type字段查找类型为txt2video的平台
-     * 
+     * 获取文生视频模型列表
+     *
      * @return 平台模型列表
      */
     @GetMapping("/text-to-video/models")
     public Result<List<PlatformModelResponse>> getTextToVideoModels() {
-        try {
-            // 根据类型获取所有启用的文生视频平台（type=txt2video）
-            List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey("txt2video", null);
-            
-            List<PlatformModelResponse> responses = new ArrayList<>();
-            for (ApiPlatform platform : platforms) {
-                // 检查是否有支持的模型
-                if (platform.getSupportedModels() != null && !platform.getSupportedModels().trim().isEmpty()) {
-                    PlatformModelResponse response = new PlatformModelResponse();
-                    response.setPlatformId(platform.getId());
-                    response.setPlatformName(platform.getName());
-                    
-                    // 解析支持的模型（以#号分割）
-                    String[] modelIds = platform.getSupportedModels().split("#");
-                    List<PlatformModelResponse.ModelInfo> models = Arrays.stream(modelIds)
-                            .filter(id -> id != null && !id.trim().isEmpty())
-                            .map(id -> {
-                                PlatformModelResponse.ModelInfo modelInfo = new PlatformModelResponse.ModelInfo();
-                                modelInfo.setId(id.trim());
-                                modelInfo.setName(id.trim());
-                                return modelInfo;
-                            })
-                            .collect(Collectors.toList());
-                    
-                    response.setModels(models);
-                    responses.add(response);
-                }
-            }
-            
-            return Result.success(responses);
-        } catch (Exception e) {
-            return Result.error("获取模型列表失败：" + e.getMessage());
-        }
+        return Result.success(getModelsByType("txt2video"));
     }
-    
+
     /**
-     * 获取图生视频平台的模型列表
-     * 根据type字段查找类型为img2video的平台
-     * 
+     * 获取图生视频模型列表
+     *
      * @return 平台模型列表
      */
     @GetMapping("/image-to-video/models")
     public Result<List<PlatformModelResponse>> getImageToVideoModels() {
-        try {
-            // 根据类型获取所有启用的图生视频平台（type=img2video）
-            List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey("img2video", null);
-            
-            List<PlatformModelResponse> responses = new ArrayList<>();
-            for (ApiPlatform platform : platforms) {
-                // 检查是否有支持的模型
-                if (platform.getSupportedModels() != null && !platform.getSupportedModels().trim().isEmpty()) {
-                    PlatformModelResponse response = new PlatformModelResponse();
-                    response.setPlatformId(platform.getId());
-                    response.setPlatformName(platform.getName());
-                    
-                    // 解析支持的模型（以#号分割）
-                    String[] modelIds = platform.getSupportedModels().split("#");
-                    List<PlatformModelResponse.ModelInfo> models = Arrays.stream(modelIds)
-                            .filter(id -> id != null && !id.trim().isEmpty())
-                            .map(id -> {
-                                PlatformModelResponse.ModelInfo modelInfo = new PlatformModelResponse.ModelInfo();
-                                modelInfo.setId(id.trim());
-                                modelInfo.setName(id.trim());
-                                return modelInfo;
-                            })
-                            .collect(Collectors.toList());
-                    
-                    response.setModels(models);
-                    responses.add(response);
-                }
-            }
-            
-            return Result.success(responses);
-        } catch (Exception e) {
-            return Result.error("获取模型列表失败：" + e.getMessage());
-        }
+        return Result.success(getModelsByType("img2video"));
     }
-    
+
     /**
-     * 从token中解析用户ID
-     * token格式：app_token_{userId}_{timestamp} 或 Bearer app_token_{userId}_{timestamp}
-     * 
-     * @param token 用户Token
-     * @return 用户ID，如果token无效则返回null
+     * 根据类型获取模型列表（通用方法）
      */
-    private Long getUserIdFromToken(String token) {
-        if (token == null || token.isEmpty()) {
-            return null;
-        }
+    private List<PlatformModelResponse> getModelsByType(String type) {
+        // 获取对应类型的平台列表（这里siteId传null，表示获取所有或全局配置）
+        List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey(type, null);
         
-        // 移除Bearer前缀
-        if (token.startsWith("Bearer ")) {
-            token = token.substring(7);
-        }
-        
-        // 解析token格式：app_token_{userId}_{timestamp}
-        if (token.startsWith("app_token_")) {
-            String[] parts = token.substring(10).split("_");
-            if (parts.length > 0) {
-                try {
-                    return Long.parseLong(parts[0]);
-                } catch (NumberFormatException e) {
-                    // token格式错误
-                    return null;
+        return platforms.stream().map(platform -> {
+            PlatformModelResponse response = new PlatformModelResponse();
+            response.setPlatformId(platform.getId());
+            response.setPlatformName(platform.getName());
+            
+            List<PlatformModelResponse.ModelInfo> modelInfos = new ArrayList<>();
+            if (platform.getSupportedModels() != null && !platform.getSupportedModels().isEmpty()) {
+                // 模型列表以#号分割
+                String[] models = platform.getSupportedModels().split("#");
+                for (String model : models) {
+                    if (!model.trim().isEmpty()) {
+                        PlatformModelResponse.ModelInfo info = new PlatformModelResponse.ModelInfo();
+                        info.setId(model.trim());
+                        info.setName(model.trim()); // 暂时使用ID作为名称，也可以扩展配置
+                        modelInfos.add(info);
+                    }
                 }
             }
-        }
-        
-        return null;
+            response.setModels(modelInfos);
+            return response;
+        }).collect(Collectors.toList());
+    }
+
+    /**
+     * 删除生成记录
+     *
+     * @param id 记录ID
+     * @param userId 当前用户ID
+     * @return 结果
+     */
+    @DeleteMapping("/{id}")
+    public Result<Void> deleteRecord(
+            @PathVariable Long id,
+            @AuthenticationPrincipal Long userId) {
+        generationService.deleteGenerationRecord(id, userId);
+        return Result.success();
+    }
+
+    /**
+     * 发布生成记录
+     *
+     * @param id 记录ID
+     * @param userId 当前用户ID
+     * @return 结果
+     */
+    @PostMapping("/{id}/publish")
+    public Result<Void> publishRecord(
+            @PathVariable Long id,
+            @AuthenticationPrincipal Long userId) {
+        generationService.publishGenerationRecord(id, userId);
+        return Result.success();
     }
 }

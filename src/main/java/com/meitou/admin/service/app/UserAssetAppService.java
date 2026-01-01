@@ -7,6 +7,8 @@ import com.meitou.admin.entity.UserAsset;
 import com.meitou.admin.mapper.UserAssetMapper;
 import com.meitou.admin.mapper.UserMapper;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,13 +46,13 @@ public class UserAssetAppService extends ServiceImpl<UserAssetMapper, UserAsset>
         // 从SiteContext获取当前站点ID
         Long siteId = SiteContext.getSiteId();
         if (siteId == null) {
-            throw new RuntimeException("无法识别站点，请检查请求头或域名配置");
+            throw new BusinessException(ErrorCode.SITE_NOT_FOUND);
         }
         
         // 查询用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 创建资产对象
@@ -80,16 +82,19 @@ public class UserAssetAppService extends ServiceImpl<UserAssetMapper, UserAsset>
      * @param userId 用户ID
      * @param folder 文件夹路径（可选，如果为null或空字符串则返回根目录的资产）
      * @param type 类型筛选（可选：image、video、audio，如果为null或"all"则返回所有类型）
+     * @param ignoreFolder 是否忽略文件夹结构（true表示返回所有层级的资产）
      * @return 资产列表
      */
-    public List<UserAsset> getUserAssets(Long userId, String folder, String type) {
+    public List<UserAsset> getUserAssets(Long userId, String folder, String type, Boolean ignoreFolder) {
         LambdaQueryWrapper<UserAsset> wrapper = new LambdaQueryWrapper<>();
         
         // 筛选用户
         wrapper.eq(UserAsset::getUserId, userId);
         
-        // 筛选文件夹：如果folder为null或空，则返回根目录（folder为null或空字符串）的资产
-        if (folder == null || folder.trim().isEmpty()) {
+        // 筛选文件夹：只有在不忽略文件夹结构时才生效
+        if (Boolean.TRUE.equals(ignoreFolder)) {
+            // 忽略文件夹，返回所有资产
+        } else if (folder == null || folder.trim().isEmpty()) {
             wrapper.and(w -> w.isNull(UserAsset::getFolder).or().eq(UserAsset::getFolder, ""));
         } else {
             wrapper.eq(UserAsset::getFolder, folder);
@@ -104,6 +109,13 @@ public class UserAssetAppService extends ServiceImpl<UserAssetMapper, UserAsset>
         wrapper.orderByDesc(UserAsset::getUploadDate);
         
         return assetMapper.selectList(wrapper);
+    }
+    
+    /**
+     * 获取用户的资产列表（兼容旧方法）
+     */
+    public List<UserAsset> getUserAssets(Long userId, String folder, String type) {
+        return getUserAssets(userId, folder, type, false);
     }
     
     /**
@@ -145,10 +157,10 @@ public class UserAssetAppService extends ServiceImpl<UserAssetMapper, UserAsset>
         // 查询资产并验证所有权
         UserAsset asset = assetMapper.selectById(assetId);
         if (asset == null) {
-            throw new RuntimeException("资产不存在");
+            throw new BusinessException(ErrorCode.ASSET_NOT_FOUND);
         }
         if (!asset.getUserId().equals(userId)) {
-            throw new RuntimeException("无权操作此资产");
+            throw new BusinessException(ErrorCode.PERMISSION_DENIED.getCode(), "无权操作此资产");
         }
         
         // 更新字段
@@ -174,10 +186,10 @@ public class UserAssetAppService extends ServiceImpl<UserAssetMapper, UserAsset>
         // 查询资产并验证所有权
         UserAsset asset = assetMapper.selectById(assetId);
         if (asset == null) {
-            throw new RuntimeException("资产不存在");
+            throw new BusinessException(ErrorCode.ASSET_NOT_FOUND);
         }
         if (!asset.getUserId().equals(userId)) {
-            throw new RuntimeException("无权操作此资产");
+            throw new BusinessException(ErrorCode.PERMISSION_DENIED.getCode(), "无权操作此资产");
         }
         
         // 逻辑删除

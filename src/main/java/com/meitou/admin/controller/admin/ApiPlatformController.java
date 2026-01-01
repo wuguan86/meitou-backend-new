@@ -29,11 +29,16 @@ public class ApiPlatformController {
     /**
      * 获取平台列表（包含接口）
      * 
-     * @param siteId 站点ID（可选）
+     * @param siteId 站点ID
      * @return 平台列表
      */
     @GetMapping
-    public Result<List<ApiPlatformResponse>> getPlatforms(@RequestParam(required = false) Long siteId) {
+    @SiteScope
+    public Result<List<ApiPlatformResponse>> getPlatforms(@RequestParam("siteId") Long siteId) {
+        if (siteId == null) {
+            return Result.error("站点ID不能为空");
+        }
+        
         List<ApiPlatform> platforms = platformService.getPlatforms(siteId);
         
         // 转换为响应DTO，包含接口列表
@@ -46,7 +51,6 @@ public class ApiPlatformController {
             response.setNodeInfo(platform.getNodeInfo());
             response.setIsEnabled(platform.getIsEnabled());
             // 如果apiKey已设置，返回占位符，避免前端显示加密后的字符串
-            // 前端在编辑时，如果看到apiKey为空或占位符，会显示"已设置"提示
             response.setApiKey(platform.getApiKey() != null && !platform.getApiKey().isEmpty() ? "***已设置***" : null);
             response.setDescription(platform.getDescription());
             response.setSupportedModels(platform.getSupportedModels());
@@ -77,10 +81,15 @@ public class ApiPlatformController {
      * 获取平台详情
      * 
      * @param id 平台ID
+     * @param siteId 站点ID
      * @return 平台详情
      */
     @GetMapping("/{id}")
-    public Result<ApiPlatformResponse> getPlatform(@PathVariable Long id) {
+    @SiteScope
+    public Result<ApiPlatformResponse> getPlatform(@PathVariable Long id, @RequestParam("siteId") Long siteId) {
+        if (siteId == null) {
+            return Result.error("站点ID不能为空");
+        }
         ApiPlatform platform = platformService.getPlatformById(id);
         
         // 转换为响应DTO
@@ -201,12 +210,13 @@ public class ApiPlatformController {
      * 
      * @param id 平台ID
      * @param request 平台请求
+     * @param siteId 站点ID（用于验证权限和定位原平台）
      * @return 更新后的平台
      */
     @PutMapping("/{id}")
-    @SiteScope // 使用 AOP 自动处理 SiteContext（从 RequestBody 中获取 siteId）
-    public Result<ApiPlatformResponse> updatePlatform(@PathVariable Long id, @RequestBody ApiPlatformRequest request) {
-        // SiteContext 已由 @SiteScope 注解自动设置（从 request.siteId 中获取）
+    @SiteScope
+    public Result<ApiPlatformResponse> updatePlatform(@PathVariable Long id, @RequestBody ApiPlatformRequest request, @RequestParam("siteId") Long siteId) {
+        // SiteContext 由 @SiteScope 注解根据 siteId 参数设置
         // 验证必填字段
         if (request.getSiteId() == null) {
             return Result.error("站点ID不能为空，请选择所属站点（医美类=1，电商类=2，生活服务类=3）");
@@ -286,7 +296,7 @@ public class ApiPlatformController {
      */
     @DeleteMapping("/{id}")
     @SiteScope // 使用 AOP 自动处理 SiteContext（虽然 api_platforms 表不需要多租户过滤，但保持一致性）
-    public Result<Void> deletePlatform(@PathVariable Long id, @RequestParam(required = true) Long siteId) {
+    public Result<Void> deletePlatform(@PathVariable Long id, @RequestParam(value = "siteId", required = true) Long siteId) {
         // SiteContext 已由 @SiteScope 注解自动设置（虽然这里不使用，但保持一致性）
         // 获取平台信息，验证站点ID是否匹配
         ApiPlatform platform = platformService.getPlatformById(id);

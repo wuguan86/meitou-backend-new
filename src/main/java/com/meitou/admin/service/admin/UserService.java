@@ -1,6 +1,8 @@
 package com.meitou.admin.service.admin;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.User;
 import com.meitou.admin.mapper.UserMapper;
@@ -23,14 +25,16 @@ public class UserService extends ServiceImpl<UserMapper, User> {
     private final BCryptPasswordEncoder passwordEncoder; // 密码编码器（通过依赖注入）
     
     /**
-     * 获取用户列表（支持站点ID和搜索）
+     * 获取用户列表（支持站点ID和搜索，分页）
      * 管理后台需要查看所有站点的用户，所以不使用多租户过滤
      * 
      * @param siteId 站点ID（可选）
      * @param search 搜索关键词
-     * @return 用户列表
+     * @param page 当前页码
+     * @param size 每页数量
+     * @return 分页用户列表
      */
-    public List<User> getUsers(Long siteId, String search) {
+    public IPage<User> getUsers(Long siteId, String search, Integer page, Integer size) {
         LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
         if (siteId != null) {
             wrapper.eq(User::getSiteId, siteId);
@@ -41,7 +45,9 @@ public class UserService extends ServiceImpl<UserMapper, User> {
                     .or().like(User::getPhone, search));
         }
         wrapper.orderByDesc(User::getCreatedAt);
-        return userMapper.selectList(wrapper);
+        
+        Page<User> pageParam = new Page<>(page, size);
+        return userMapper.selectPage(pageParam, wrapper);
     }
     
     /**

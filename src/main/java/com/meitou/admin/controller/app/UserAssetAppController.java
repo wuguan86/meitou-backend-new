@@ -54,39 +54,45 @@ public class UserAssetAppController {
             if (file == null || file.isEmpty()) {
                 return Result.error(400, "文件不能为空");
             }
+
+            // 强制校验文件后缀（无论是否指定了type）
+            String filename = file.getOriginalFilename();
+            if (filename == null || filename.lastIndexOf(".") == -1) {
+                return Result.error(400, "文件名无效");
+            }
+            String ext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase();
             
-            // 自动判断文件类型（如果未指定）
+            boolean isValidExt = false;
+            String detectedType = null;
+            
+            if (ext.matches("jpg|jpeg|png|gif|webp|bmp|svg|ico|tiff")) {
+                isValidExt = true;
+                detectedType = "image";
+            } else if (ext.matches("mp4|avi|mov|wmv|flv|mkv|webm")) {
+                isValidExt = true;
+                detectedType = "video";
+            } else if (ext.matches("mp3|wav|flac|aac|ogg|m4a")) {
+                isValidExt = true;
+                detectedType = "audio";
+            }
+            
+            if (!isValidExt) {
+                return Result.error(400, "不支持的文件类型: " + ext);
+            }
+            
+            // 如果未指定类型，或者指定的类型与后缀不匹配（防止恶意绕过），则使用检测到的类型
             if (type == null || type.trim().isEmpty()) {
-                String contentType = file.getContentType();
-                if (contentType != null) {
-                    if (contentType.startsWith("image/")) {
-                        type = "image";
-                    } else if (contentType.startsWith("video/")) {
-                        type = "video";
-                    } else if (contentType.startsWith("audio/")) {
-                        type = "audio";
-                    } else {
-                        return Result.error(400, "不支持的文件类型");
-                    }
-                } else {
-                    // 根据文件扩展名判断
-                    String filename = file.getOriginalFilename();
-                    if (filename != null) {
-                        String ext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase();
-                        if (ext.matches("jpg|jpeg|png|gif|webp|bmp")) {
-                            type = "image";
-                        } else if (ext.matches("mp4|avi|mov|wmv|flv|mkv")) {
-                            type = "video";
-                        } else if (ext.matches("mp3|wav|flac|aac|ogg")) {
-                            type = "audio";
-                        } else {
-                            return Result.error(400, "不支持的文件类型");
-                        }
-                    } else {
-                        return Result.error(400, "无法识别文件类型");
-                    }
+                type = detectedType;
+            } else {
+                // 如果用户指定了类型，但不匹配后缀检测到的类型，以后缀为准（或者报错）
+                // 这里选择简单地以后缀检测为准，修正类型
+                if (!type.equals(detectedType)) {
+                    log.warn("用户上传文件类型 {} 与后缀检测类型 {} 不一致，修正为 {}", type, detectedType, detectedType);
+                    type = detectedType;
                 }
             }
+            
+            // 根据类型确定存储文件夹
             
             // 根据类型确定存储文件夹
             String storageFolder;
@@ -118,8 +124,7 @@ public class UserAssetAppController {
             
             // 设置标题（如果未指定，使用文件名）
             if (title == null || title.trim().isEmpty()) {
-                String filename = file.getOriginalFilename();
-                title = filename != null ? filename.substring(0, filename.lastIndexOf(".")) : "未命名文件";
+                title = filename != null && filename.lastIndexOf(".") != -1 ? filename.substring(0, filename.lastIndexOf(".")) : "未命名文件";
             }
             
             // 创建资产记录
@@ -147,13 +152,15 @@ public class UserAssetAppController {
      * @param userId 用户ID（从请求头获取）
      * @param folder 文件夹路径（可选，如果为空则返回根目录的资产）
      * @param type 类型筛选（可选：image、video、audio、all）
+     * @param ignoreFolder 是否忽略文件夹结构（可选，true表示返回所有层级的资产，默认false）
      * @return 资产列表
      */
     @GetMapping
     public Result<List<UserAsset>> getAssets(
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             @RequestParam(value = "folder", required = false) String folder,
-            @RequestParam(value = "type", required = false, defaultValue = "all") String type
+            @RequestParam(value = "type", required = false, defaultValue = "all") String type,
+            @RequestParam(value = "ignoreFolder", required = false, defaultValue = "false") Boolean ignoreFolder
     ) {
         try {
             // 验证用户ID
@@ -161,7 +168,7 @@ public class UserAssetAppController {
                 return Result.error(401, "用户未登录");
             }
             
-            List<UserAsset> assets = assetService.getUserAssets(userId, folder, type);
+            List<UserAsset> assets = assetService.getUserAssets(userId, folder, type, ignoreFolder);
             return Result.success(assets);
             
         } catch (Exception e) {

@@ -34,27 +34,21 @@ public class AssetFolderAppController {
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             @RequestBody Map<String, String> request
     ) {
-        try {
-            // 验证用户ID
-            if (userId == null) {
-                return Result.error(401, "用户未登录");
-            }
-            
-            String name = request.get("name");
-            String parentPath = request.get("parentPath");
-            
-            if (name == null || name.trim().isEmpty()) {
-                return Result.error(400, "文件夹名称不能为空");
-            }
-            
-            AssetFolder folder = folderService.createFolder(userId, name.trim(), parentPath);
-            log.info("用户 {} 创建文件夹成功：{} (路径：{})", userId, name, folder.getFolderPath());
-            return Result.success("创建成功", folder);
-            
-        } catch (Exception e) {
-            log.error("创建文件夹失败：{}", e.getMessage(), e);
-            return Result.error("创建文件夹失败：" + e.getMessage());
+        // 验证用户ID
+        if (userId == null) {
+            return Result.error(401, "用户未登录");
         }
+        
+        String name = request.get("name");
+        String parentPath = request.get("parentPath");
+        
+        if (name == null || name.trim().isEmpty()) {
+            return Result.error(400, "文件夹名称不能为空");
+        }
+        
+        AssetFolder folder = folderService.createFolder(userId, name.trim(), parentPath);
+        log.info("用户 {} 创建文件夹成功：{} (路径：{})", userId, name, folder.getFolderPath());
+        return Result.success("创建成功", folder);
     }
     
     /**
@@ -139,18 +133,12 @@ public class AssetFolderAppController {
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             @PathVariable Long folderId
     ) {
-        try {
-            // 验证用户ID
-            if (userId == null) {
-                return Result.error(401, "用户未登录");
-            }
-            
-            folderService.deleteFolder(userId, folderId);
-            return Result.success("删除成功", null);
-            
-        } catch (Exception e) {
-            log.error("删除文件夹失败：{}", e.getMessage(), e);
-            return Result.error("删除文件夹失败：" + e.getMessage());
+        // 验证用户ID
+        if (userId == null) {
+            return Result.error(401, "用户未登录");
         }
+        
+        folderService.deleteFolder(userId, folderId);
+        return Result.success("删除成功", null);
     }
 }

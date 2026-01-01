@@ -3,6 +3,7 @@ package com.meitou.admin.controller.app;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.meitou.admin.common.Result;
 import com.meitou.admin.dto.app.*;
+import com.meitou.admin.exception.BusinessException;
 import com.meitou.admin.service.app.RechargeConfigService;
 import com.meitou.admin.service.app.RechargeService;
 import com.meitou.admin.util.TokenUtil;
@@ -39,6 +40,7 @@ public class RechargeController {
      */
     @GetMapping("/config")
     public Result<RechargeConfigResponse> getConfig() {
+        log.info("收到获取充值配置请求");
         try {
             RechargeConfigResponse config = rechargeConfigService.getActiveConfig();
             return Result.success("获取配置成功", config);
@@ -68,9 +70,11 @@ public class RechargeController {
             
             RechargeOrderResponse response = rechargeService.createOrder(userId, request);
             return Result.success("创建订单成功", response);
+        } catch (BusinessException e) {
+            return Result.error(e.getCode(), e.getMessage());
         } catch (Exception e) {
             log.error("创建订单失败", e);
-            return Result.error("创建订单失败：" + e.getMessage());
+            return Result.error("创建订单失败，请联系客服");
         }
     }
     

@@ -18,8 +18,8 @@ public class CorsConfig {
         CorsConfiguration config = new CorsConfiguration();
         
         // 允许的源（前端地址）
-        config.addAllowedOrigin("http://localhost:3000");
-        config.addAllowedOrigin("http://192.168.1.5:3000");
+        // 使用 allowedOriginPatterns 替代 allowedOrigins 以支持通配符
+        config.addAllowedOriginPattern("*");
         
         // 允许的请求头
         config.addAllowedHeader("*");

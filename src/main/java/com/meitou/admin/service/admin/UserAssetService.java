@@ -1,6 +1,8 @@
 package com.meitou.admin.service.admin;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.UserAsset;
 import com.meitou.admin.mapper.UserAssetMapper;
@@ -20,20 +22,19 @@ public class UserAssetService extends ServiceImpl<UserAssetMapper, UserAsset> {
     private final UserAssetMapper assetMapper;
     
     /**
-     * 获取资产列表（支持站点ID、类型、搜索）
-     * 管理后台需要查看所有站点的资产，所以不使用多租户过滤
+     * 获取资产列表（支持类型、搜索、分页）
+     * siteId 由 MyBatis Plus 多租户插件自动处理（基于 @SiteScope 设置的上下文）
      * 
-     * @param siteId 站点ID（可选）
+     * @param page 分页对象
      * @param type 类型
      * @param search 搜索关键词
-     * @return 资产列表
+     * @return 资产列表分页结果
      */
-    public List<UserAsset> getAssets(Long siteId, String type, String search) {
+    public IPage<UserAsset> getAssets(Page<UserAsset> page, String type, String search) {
         LambdaQueryWrapper<UserAsset> wrapper = new LambdaQueryWrapper<>();
         
-        if (siteId != null) {
-            wrapper.eq(UserAsset::getSiteId, siteId);
-        }
+        // siteId 由插件自动处理，无需手动添加
+        
         if (StringUtils.hasText(type) && !"all".equals(type)) {
             wrapper.eq(UserAsset::getType, type);
         }
@@ -42,12 +43,11 @@ public class UserAssetService extends ServiceImpl<UserAssetMapper, UserAsset> {
                     .or().like(UserAsset::getUserName, search));
         }
         
-        wrapper.orderByDesc(UserAsset::getIsPinned);
         wrapper.orderByDesc(UserAsset::getCreatedAt);
         
-        return assetMapper.selectList(wrapper);
+        return assetMapper.selectPage(page, wrapper);
     }
-    
+
     /**
      * 根据ID获取资产
      * 
@@ -93,18 +93,18 @@ public class UserAssetService extends ServiceImpl<UserAssetMapper, UserAsset> {
         assetMapper.deleteById(id);
     }
     
-    /**
-     * 置顶/取消置顶
-     * 
-     * @param id 资产ID
-     * @return 更新后的资产
-     */
-    public UserAsset togglePin(Long id) {
-        UserAsset asset = getAssetById(id);
-        asset.setIsPinned(!asset.getIsPinned());
-        assetMapper.updateById(asset);
-        return asset;
-    }
+//    /**
+//     * 置顶/取消置顶
+//     *
+//     * @param id 资产ID
+//     * @return 更新后的资产
+//     */
+//    public UserAsset togglePin(Long id) {
+//        UserAsset asset = getAssetById(id);
+//        asset.setIsPinned(!asset.getIsPinned());
+//        assetMapper.updateById(asset);
+//        return asset;
+//    }
     
     /**
      * 更新状态（上架/下架）
