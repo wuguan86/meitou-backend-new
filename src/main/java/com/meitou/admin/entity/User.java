@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 /**
  * 用户实体类
  * 对应数据库表：users
+ * Updated for prompt optimization feature
  */
 @Data
 @TableName("users")

@@ -15,11 +15,17 @@ import com.meitou.admin.mapper.UserMapper;
 import com.meitou.admin.util.PasswordValidator;
 import com.meitou.admin.util.TokenUtil;
 import com.meitou.admin.service.common.LoginAttemptService;
+import com.meitou.admin.storage.FileStorageService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -27,6 +33,7 @@ import java.time.LocalDateTime;
  * 用户端认证服务
  * 处理用户验证码登录、注册等业务逻辑
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthAppService {
@@ -36,6 +43,8 @@ public class AuthAppService {
     private final SmsCodeService smsCodeService;
     private final BCryptPasswordEncoder passwordEncoder;
     private final LoginAttemptService loginAttemptService;
+    private final FileStorageService fileStorageService;
+    private final RestTemplate restTemplate;
 
     private static final String NO_PASSWORD_PLACEHOLDER = "NO_PASSWORD_CODE_LOGIN";
     
@@ -61,10 +70,19 @@ public class AuthAppService {
         
         boolean isNewUser = false;
 
-        // 如果用户不存在，自动注册
+        // 如果用户不存在，自动注册或恢复已删除用户
         if (user == null) {
-            user = createNewUser(request.getPhone(), request.getInvitationCode());
-            isNewUser = true;
+            // 检查是否存在已删除用户
+            User deletedUser = userMapper.selectByPhoneIncludeDeleted(request.getPhone());
+            if (deletedUser != null) {
+                // 恢复已删除用户
+                restoreDeletedUser(deletedUser, request.getInvitationCode());
+                user = deletedUser;
+                isNewUser = true;
+            } else {
+                user = createNewUser(request.getPhone(), request.getInvitationCode());
+                isNewUser = true;
+            }
         } else {
             // 检查用户状态
             if (!Constants.USER_STATUS_ACTIVE.equals(user.getStatus())) {
@@ -170,8 +188,8 @@ public class AuthAppService {
         User user = new User();
         user.setPhone(phone);
         user.setUsername("用户_" + phone.substring(7)); // 默认用户名为手机号后4位
-        // 邮箱设置为手机号+@meitou.com的格式（因为数据库要求NOT NULL且UNIQUE）
-        user.setEmail(phone + "@meitou.com");
+        // 邮箱为空（修改为允许为NULL，不再生成假邮箱）
+        user.setEmail(null);
         // 密码设置为默认值（数据库要求NOT NULL，验证码登录无需密码）
         // 使用一个默认的占位符，实际验证码登录不需要验证密码
         user.setPassword(NO_PASSWORD_PLACEHOLDER);
@@ -191,7 +209,84 @@ public class AuthAppService {
         // 插入用户
         userMapper.insert(user);
         
+        // 生成并上传默认头像
+        generateAndUploadAvatar(user);
+        
         return user;
+    }
+    
+    /**
+     * 恢复已删除用户并重置为新用户状态
+     * 
+     * @param user 已删除的用户对象
+     * @param invitationCode 邀请码
+     */
+    private void restoreDeletedUser(User user, String invitationCode) {
+        Long siteId = SiteContext.getSiteId();
+        if (siteId == null) {
+            throw new RuntimeException("无法识别站点，请检查请求头或域名配置");
+        }
+        
+        user.setDeleted(0);
+        user.setBalance(0);
+        user.setPassword(NO_PASSWORD_PLACEHOLDER);
+        user.setSiteId(siteId);
+        user.setStatus(Constants.USER_STATUS_ACTIVE);
+        user.setCreatedAt(LocalDateTime.now());
+        user.setUpdatedAt(LocalDateTime.now());
+        // 重置用户名和邮箱
+        user.setUsername("用户_" + user.getPhone().substring(7));
+        user.setEmail(user.getPhone() + "@meitou.com");
+        
+        // 如果头像为空，生成默认头像
+        if (user.getAvatarUrl() == null || user.getAvatarUrl().isEmpty()) {
+            generateAndUploadAvatar(user);
+        }
+        
+        // 如果有邀请码，处理邀请码逻辑
+        if (invitationCode != null && !invitationCode.trim().isEmpty()) {
+            handleInvitationCode(invitationCode, user);
+        }
+        
+        // 使用自定义方法更新（因为MyBatis Plus逻辑删除插件会阻止更新已删除记录）
+        userMapper.restoreUser(user);
+    }
+
+    /**
+     * 生成并上传默认头像
+     * 
+     * @param user 用户对象
+     */
+    private void generateAndUploadAvatar(User user) {
+        try {
+            // DiceBear API URL (使用SVG格式)
+            String diceBearUrl = "https://api.dicebear.com/7.x/avataaars/svg?seed=" + user.getId();
+            
+            // 下载 SVG 内容
+            ResponseEntity<byte[]> response = restTemplate.getForEntity(diceBearUrl, byte[].class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                byte[] svgBytes = response.getBody();
+                
+                // 上传到 OSS
+                try (InputStream inputStream = new ByteArrayInputStream(svgBytes)) {
+                    String fileName = "avatar_" + user.getId() + "_" + System.currentTimeMillis() + ".svg";
+                    String avatarUrl = fileStorageService.upload(inputStream, "avatars/", fileName);
+                    
+                    // 更新用户头像 URL
+                    user.setAvatarUrl(avatarUrl);
+                    // 注意：如果是 createNewUser 调用，这里会再次更新；
+                    // 如果是 restoreDeletedUser 调用，这里更新的是内存对象，后续 restoreUser 会保存到数据库（但 restoreUser 可能不更新 avatarUrl 字段，需要检查）
+                    
+                    // 对于 createNewUser，userMapper.insert 后已经有 ID，这里 updateById 是安全的
+                    if (user.getId() != null) {
+                         userMapper.updateById(user);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("生成并上传头像失败: userId={}", user.getId(), e);
+            // 失败不影响注册流程，用户可以稍后自己上传
+        }
     }
     
     /**

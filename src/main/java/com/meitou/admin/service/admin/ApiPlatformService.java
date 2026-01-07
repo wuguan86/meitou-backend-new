@@ -9,6 +9,8 @@ import com.meitou.admin.entity.ApiPlatform;
 import com.meitou.admin.mapper.ApiInterfaceMapper;
 import com.meitou.admin.mapper.ApiPlatformMapper;
 import com.meitou.admin.util.AesEncryptUtil;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +26,7 @@ public class ApiPlatformService extends ServiceImpl<ApiPlatformMapper, ApiPlatfo
     
     private final ApiPlatformMapper platformMapper; // 平台Mapper
     private final ApiInterfaceMapper interfaceMapper; // 接口Mapper
+    private final ObjectMapper objectMapper = new ObjectMapper();
     
     /**
      * 获取平台列表（按站点ID）
@@ -66,7 +69,7 @@ public class ApiPlatformService extends ServiceImpl<ApiPlatformMapper, ApiPlatfo
     /**
      * 根据类型获取平台列表（解密apiKey版本，用于内部服务调用）
      * 
-     * @param type API类型：image_analysis, video_analysis, txt2img, img2img, txt2video, img2video, voice_clone
+     * @param type API类型：image_analysis, video_analysis, txt2img, img2img, txt2video, img2video, voice_clone, prompt_optimize
      * @param siteId 站点ID（可选）
      * @return 平台列表（apiKey已解密，已启用）
      */
@@ -91,6 +94,89 @@ public class ApiPlatformService extends ServiceImpl<ApiPlatformMapper, ApiPlatfo
             }
         });
         return platforms;
+    }
+
+    /**
+     * 根据类型和模型获取平台（解密apiKey版本）
+     * 优先匹配支持该模型的平台，其次返回未配置模型限制的平台
+     *
+     * @param type API类型
+     * @param model 模型名称
+     * @param siteId 站点ID（可选）
+     * @return 匹配的平台，未找到返回null
+     */
+    public ApiPlatform getPlatformByTypeAndModel(String type, String model, Long siteId) {
+        List<ApiPlatform> platforms = getPlatformsByTypeWithDecryptedKey(type, siteId);
+
+        if (platforms.isEmpty()) {
+            return null;
+        }
+
+        // 1. 优先查找明确支持该模型的平台
+        if (model != null && !model.isEmpty()) {
+            for (ApiPlatform platform : platforms) {
+                String supportedModels = platform.getSupportedModels();
+                if (supportedModels != null && !supportedModels.isEmpty()) {
+                    try {
+                        if (supportedModels.trim().startsWith("[")) {
+                            // 尝试解析JSON (新格式)
+                            JsonNode modelsNode = objectMapper.readTree(supportedModels);
+                            for (JsonNode m : modelsNode) {
+                                // 处理字符串数组 ["flux-1.0", "flux-2.0"]
+                                if (m.isTextual()) {
+                                    if (m.asText().equals(model)) {
+                                        return platform;
+                                    }
+                                } 
+                                // 处理对象数组 [{"name": "flux-1.0", "label": "Flux 1.0"}]
+                                else if (m.isObject()) {
+                                    // 优先匹配 name 字段（对应前端 ModelInfo.id）
+                                    if (m.has("name") && m.get("name").asText().equals(model)) {
+                                        return platform;
+                                    }
+                                    // 兼容 id 字段
+                                    if (m.has("id") && m.get("id").asText().equals(model)) {
+                                        return platform;
+                                    }
+                                    // 兼容 value 字段
+                                    if (m.has("value") && m.get("value").asText().equals(model)) {
+                                        return platform;
+                                    }
+                                }
+                            }
+                        } else {
+                            // 旧格式兼容：#号分割
+                            String[] models = supportedModels.split("#");
+                            for (String m : models) {
+                                if (m.trim().equals(model)) {
+                                    return platform;
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // 解析JSON失败，尝试旧的#分割方式
+                        String[] models = supportedModels.split("#");
+                        for (String m : models) {
+                            if (m.trim().equals(model)) {
+                                return platform;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 如果没有明确支持的，查找未配置模型限制的平台（通用平台）
+        for (ApiPlatform platform : platforms) {
+            String supportedModels = platform.getSupportedModels();
+            if (supportedModels == null || supportedModels.trim().isEmpty() || "[]".equals(supportedModels.trim())) {
+                return platform;
+            }
+        }
+
+        // 3. 如果还是没找到，且列表不为空，是否默认返回第一个？
+        // 为了严格匹配，建议返回null，让上层决定是否报错
+        return null;
     }
     
     /**

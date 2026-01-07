@@ -1,5 +1,7 @@
 package com.meitou.admin.controller.app;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meitou.admin.common.Result;
 import com.meitou.admin.dto.app.*;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -11,6 +13,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +49,14 @@ public class GenerationController {
             @RequestParam(required = false) String type,
             @AuthenticationPrincipal Long userId) {
         return Result.success(generationService.getUserGenerationRecords(userId, page, size, type));
+    }
+
+    /**
+     * 查询任务状态
+     */
+    @GetMapping("/task/{taskId}")
+    public Result<ImageGenerationResponse> getTaskStatus(@PathVariable Long taskId) {
+        return Result.success(generationService.getTaskStatus(taskId));
     }
 
     /**
@@ -117,6 +129,17 @@ public class GenerationController {
     }
 
     /**
+     * 提示词优化
+     */
+    @PostMapping("/prompt-optimize")
+    public SseEmitter optimizePrompt(
+            @RequestBody PromptOptimizeRequest request,
+            @AuthenticationPrincipal Long userId) {
+        log.info("用户[{}]发起提示词优化请求", userId);
+        return generationService.optimizePrompt(request, userId);
+    }
+
+    /**
      * 获取文生图模型列表
      *
      * @return 平台模型列表
@@ -162,6 +185,7 @@ public class GenerationController {
     private List<PlatformModelResponse> getModelsByType(String type) {
         // 获取对应类型的平台列表（这里siteId传null，表示获取所有或全局配置）
         List<ApiPlatform> platforms = apiPlatformService.getPlatformsByTypeWithDecryptedKey(type, null);
+        ObjectMapper objectMapper = new ObjectMapper();
         
         return platforms.stream().map(platform -> {
             PlatformModelResponse response = new PlatformModelResponse();
@@ -170,14 +194,68 @@ public class GenerationController {
             
             List<PlatformModelResponse.ModelInfo> modelInfos = new ArrayList<>();
             if (platform.getSupportedModels() != null && !platform.getSupportedModels().isEmpty()) {
-                // 模型列表以#号分割
-                String[] models = platform.getSupportedModels().split("#");
-                for (String model : models) {
-                    if (!model.trim().isEmpty()) {
-                        PlatformModelResponse.ModelInfo info = new PlatformModelResponse.ModelInfo();
-                        info.setId(model.trim());
-                        info.setName(model.trim()); // 暂时使用ID作为名称，也可以扩展配置
-                        modelInfos.add(info);
+                // 尝试解析为JSON (新格式)
+                if (platform.getSupportedModels().trim().startsWith("[")) {
+                    try {
+                        JsonNode modelsNode = objectMapper.readTree(platform.getSupportedModels());
+                        for (JsonNode m : modelsNode) {
+                            PlatformModelResponse.ModelInfo info = new PlatformModelResponse.ModelInfo();
+                            String name = m.has("name") ? m.get("name").asText() : "";
+                            if (!name.isEmpty()) {
+                                info.setId(name);
+                                info.setName(m.has("label") && !m.get("label").asText().isEmpty() ? m.get("label").asText() : name);
+                                
+                                // 解析分辨率
+                                if (m.has("resolutions") && m.get("resolutions").isArray()) {
+                                    List<String> resolutions = new ArrayList<>();
+                                    m.get("resolutions").forEach(r -> resolutions.add(r.asText()));
+                                    info.setResolutions(resolutions);
+                                }
+                                
+                                // 解析比例
+                                if (m.has("ratios") && m.get("ratios").isArray()) {
+                                    List<String> ratios = new ArrayList<>();
+                                    m.get("ratios").forEach(r -> ratios.add(r.asText()));
+                                    info.setRatios(ratios);
+                                }
+                                
+                                // 解析时长
+                                if (m.has("durations") && m.get("durations").isArray()) {
+                                    List<Integer> durations = new ArrayList<>();
+                                    m.get("durations").forEach(d -> durations.add(d.asInt()));
+                                    info.setDurations(durations);
+                                }
+                                
+                                // 解析数量
+                                if (m.has("quantities") && m.get("quantities").isArray()) {
+                                    List<Integer> quantities = new ArrayList<>();
+                                    m.get("quantities").forEach(q -> quantities.add(q.asInt()));
+                                    info.setQuantities(quantities);
+                                }
+
+                                // 解析消耗
+                                if (m.has("defaultCost")) {
+                                    info.setDefaultCost(m.get("defaultCost").asInt());
+                                } else {
+                                    info.setDefaultCost(10); // 默认消耗
+                                }
+                                
+                                modelInfos.add(info);
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.warn("解析平台[{}]的模型配置JSON失败: {}", platform.getName(), e.getMessage());
+                    }
+                } else {
+                    // 模型列表以#号分割 (旧格式兼容)
+                    String[] models = platform.getSupportedModels().split("#");
+                    for (String model : models) {
+                        if (!model.trim().isEmpty()) {
+                            PlatformModelResponse.ModelInfo info = new PlatformModelResponse.ModelInfo();
+                            info.setId(model.trim());
+                            info.setName(model.trim()); // 暂时使用ID作为名称
+                            modelInfos.add(info);
+                        }
                     }
                 }
             }
@@ -215,4 +293,15 @@ public class GenerationController {
         generationService.publishGenerationRecord(id, userId);
         return Result.success();
     }
+
+//    /**
+//     * 提示词优化
+//     */
+//    @PostMapping("/prompt-optimize")
+//    public SseEmitter optimizePrompt(
+//            @RequestBody PromptOptimizeRequest request,
+//            @AuthenticationPrincipal Long userId) {
+//        log.info("用户[{}]发起提示词优化请求", userId);
+//        return generationService.optimizePrompt(request, userId);
+//    }
 }

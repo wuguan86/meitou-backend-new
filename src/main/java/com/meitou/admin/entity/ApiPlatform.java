@@ -69,7 +69,7 @@ public class ApiPlatform {
     private String supportedModels;
     
     /**
-     * API类型：image_analysis-图片分析，video_analysis-视频分析，txt2img-文生图，img2img-图生图，txt2video-文生视频，img2video-图生视频，voice_clone-声音克隆
+     * API类型：image_analysis-图片分析，video_analysis-视频分析，txt2img-文生图，img2img-图生图，txt2video-文生视频，img2video-图生视频，voice_clone-声音克隆，prompt_optimize-提示词优化
      */
     private String type;
     

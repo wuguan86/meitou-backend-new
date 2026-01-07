@@ -4,6 +4,7 @@ import com.meitou.admin.common.Result;
 import com.meitou.admin.dto.app.UpdateProfileRequest;
 import com.meitou.admin.dto.app.UserLoginResponse;
 import com.meitou.admin.service.app.AuthAppService;
+import com.meitou.admin.storage.FileStorageService;
 import com.meitou.admin.util.TokenUtil;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ import java.util.UUID;
 public class AppUserController {
 
     private final AuthAppService authAppService;
+    private final FileStorageService fileStorageService;
 
     @PutMapping("/profile")
     public Result<UserLoginResponse> updateProfile(
@@ -60,23 +62,10 @@ public class AppUserController {
         }
 
         try {
-            Path dir = Paths.get(System.getProperty("user.dir"), "uploads", "avatars");
-            Files.createDirectories(dir);
-
-            String originalName = file.getOriginalFilename();
-            String ext = ".png";
-            if (originalName != null && originalName.contains(".")) {
-                String candidate = originalName.substring(originalName.lastIndexOf(".")).toLowerCase();
-                if (candidate.length() <= 10) {
-                    ext = candidate;
-                }
-            }
-
-            String filename = UUID.randomUUID().toString().replace("-", "") + ext;
-            Path target = dir.resolve(filename);
-            Files.copy(file.getInputStream(), target, StandardCopyOption.REPLACE_EXISTING);
-
-            String avatarUrl = "/api/app/user/avatar/" + filename;
+            // 使用云存储服务上传头像
+            String avatarUrl = fileStorageService.upload(file, "avatars/");
+            
+            // 更新用户头像 URL
             authAppService.updateAvatarUrl(userId, avatarUrl);
 
             return Result.success("上传成功", avatarUrl);

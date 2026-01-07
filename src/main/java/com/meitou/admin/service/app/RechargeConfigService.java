@@ -56,6 +56,25 @@ public class RechargeConfigService {
                 .collect(Collectors.toList());
         response.setEnabledPaymentMethods(enabledPaymentMethods);
         
+        // 如果启用了对公转账，填充银行信息
+        paymentConfigs.stream()
+                .filter(p -> "bank_transfer".equals(p.getPaymentType()))
+                .findFirst()
+                .ifPresent(bankConfig -> {
+                    try {
+                        if (bankConfig.getConfigJson() != null && !bankConfig.getConfigJson().trim().isEmpty()) {
+                            RechargeConfigResponse.BankInfo bankInfo = objectMapper.readValue(
+                                bankConfig.getConfigJson(),
+                                RechargeConfigResponse.BankInfo.class
+                            );
+                            response.setBankInfo(bankInfo);
+                        }
+                    } catch (Exception e) {
+                        // 解析失败，忽略
+                        System.err.println("解析对公转账配置失败: " + e.getMessage());
+                    }
+                });
+
         return response;
     }
     

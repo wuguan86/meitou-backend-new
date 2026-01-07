@@ -12,6 +12,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
 /**
  * 用户端发布内容控制器
  * 处理发布内容的发布、查询、点赞等请求
@@ -82,18 +85,25 @@ public class PublishedContentAppController {
     }
     
     /**
-     * 获取发布内容列表
+     * 获取发布内容列表（分页）
      * 
      * @param type 类型筛选（可选：all/image/video）
-     * @return 发布内容列表
+     * @param page 页码，默认1
+     * @param pageSize 每页数量，默认10
+     * @param userId 当前用户ID（可选，用于获取点赞状态）
+     * @return 分页发布内容列表
      */
     @GetMapping
-    public Result<List<PublishedContent>> getPublishedContents(
-            @RequestParam(value = "type", required = false, defaultValue = "all") String type
+    public Result<IPage<PublishedContent>> getPublishedContents(
+            @RequestParam(value = "type", required = false, defaultValue = "all") String type,
+            @RequestParam(value = "page", defaultValue = "1") Integer page,
+            @RequestParam(value = "pageSize", defaultValue = "10") Integer pageSize,
+            @RequestHeader(value = "X-User-Id", required = false) Long userId
     ) {
         try {
-            List<PublishedContent> contents = contentService.getPublishedContents(type);
-            return Result.success(contents);
+            Page<PublishedContent> pageParam = new Page<>(page, pageSize);
+            IPage<PublishedContent> result = contentService.getPublishedContents(pageParam, type, userId);
+            return Result.success(result);
             
         } catch (Exception e) {
             log.error("获取发布内容列表失败：{}", e.getMessage(), e);

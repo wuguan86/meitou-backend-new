@@ -121,4 +121,9 @@ public class PublishedContent {
      */
     @TableLogic
     private Integer deleted;
+    /**
+     * 当前用户是否已点赞（非数据库字段）
+     */
+    @TableField(exist = false)
+    private Boolean isLiked;
 }

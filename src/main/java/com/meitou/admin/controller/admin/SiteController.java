@@ -29,13 +29,8 @@ public class SiteController {
      */
     @GetMapping
     public Result<List<Site>> getAllSites() {
-        try {
-            List<Site> sites = siteService.getAllSites();
-            return Result.success("查询成功", sites);
-        } catch (Exception e) {
-            log.error("获取站点列表失败", e);
-            return Result.error("获取站点列表失败：" + e.getMessage());
-        }
+        List<Site> sites = siteService.getAllSites();
+        return Result.success("查询成功", sites);
     }
     
     /**
@@ -46,13 +41,8 @@ public class SiteController {
      */
     @GetMapping("/{id}")
     public Result<Site> getSiteById(@PathVariable Long id) {
-        try {
-            Site site = siteService.getSiteById(id);
-            return Result.success("查询成功", site);
-        } catch (Exception e) {
-            log.error("获取站点失败", e);
-            return Result.error("获取站点失败：" + e.getMessage());
-        }
+        Site site = siteService.getSiteById(id);
+        return Result.success("查询成功", site);
     }
     
     /**
@@ -63,13 +53,8 @@ public class SiteController {
      */
     @PostMapping
     public Result<Site> createSite(@Valid @RequestBody Site site) {
-        try {
-            Site created = siteService.createSite(site);
-            return Result.success("创建成功", created);
-        } catch (Exception e) {
-            log.error("创建站点失败", e);
-            return Result.error("创建站点失败：" + e.getMessage());
-        }
+        Site created = siteService.createSite(site);
+        return Result.success("创建成功", created);
     }
     
     /**
@@ -81,13 +66,8 @@ public class SiteController {
      */
     @PutMapping("/{id}")
     public Result<Site> updateSite(@PathVariable Long id, @RequestBody Site site) {
-        try {
-            Site updated = siteService.updateSite(id, site);
-            return Result.success("更新成功", updated);
-        } catch (Exception e) {
-            log.error("更新站点失败", e);
-            return Result.error("更新站点失败：" + e.getMessage());
-        }
+        Site updated = siteService.updateSite(id, site);
+        return Result.success("更新成功", updated);
     }
 
     /**
@@ -99,13 +79,8 @@ public class SiteController {
      */
     @PutMapping("/{id}/domain")
     public Result<Site> updateDomain(@PathVariable Long id, @RequestParam String domain) {
-        try {
-            Site updated = siteService.updateDomain(id, domain);
-            return Result.success("域名更新成功", updated);
-        } catch (Exception e) {
-            log.error("更新站点域名失败", e);
-            return Result.error("更新域名失败：" + e.getMessage());
-        }
+        Site updated = siteService.updateDomain(id, domain);
+        return Result.success("域名更新成功", updated);
     }
     
     /**
@@ -116,13 +91,8 @@ public class SiteController {
      */
     @DeleteMapping("/{id}")
     public Result<Void> deleteSite(@PathVariable Long id) {
-        try {
-            siteService.deleteSite(id);
-            return Result.success("删除成功");
-        } catch (Exception e) {
-            log.error("删除站点失败", e);
-            return Result.error("删除站点失败：" + e.getMessage());
-        }
+        siteService.deleteSite(id);
+        return Result.success("删除成功");
     }
     
     /**
@@ -134,13 +104,8 @@ public class SiteController {
      */
     @PutMapping("/{id}/status")
     public Result<Site> updateStatus(@PathVariable Long id, @RequestParam String status) {
-        try {
-            Site site = siteService.updateStatus(id, status);
-            return Result.success("更新成功", site);
-        } catch (Exception e) {
-            log.error("更新站点状态失败", e);
-            return Result.error("更新站点状态失败：" + e.getMessage());
-        }
+        Site site = siteService.updateStatus(id, status);
+        return Result.success("更新成功", site);
     }
     
     /**
@@ -150,13 +115,8 @@ public class SiteController {
      */
     @PostMapping("/refresh-cache")
     public Result<Void> refreshCache() {
-        try {
-            siteService.refreshCache();
-            return Result.success("缓存刷新成功");
-        } catch (Exception e) {
-            log.error("刷新缓存失败", e);
-            return Result.error("刷新缓存失败：" + e.getMessage());
-        }
+        siteService.refreshCache();
+        return Result.success("缓存刷新成功");
     }
 }
 

@@ -540,7 +540,7 @@ INSERT INTO `user_assets` VALUES ('9', 'jimeng-2025-07-12-4611-步入这间卧�
 DROP TABLE IF EXISTS `users`;
 CREATE TABLE `users` (
                          `id` bigint NOT NULL AUTO_INCREMENT COMMENT '用户ID',
-                         `email` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '邮箱',
+                         `email` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '邮箱',
                          `username` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '用户名',
                          `password` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '密码（加密）',
                          `phone` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '手机号',

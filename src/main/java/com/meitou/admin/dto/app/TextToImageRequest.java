@@ -38,4 +38,14 @@ public class TextToImageRequest {
     @Min(value = 1, message = "生成数量最少为1")
     @Max(value = 4, message = "生成数量最多为4")
     private Integer quantity = 1;
+
+    /**
+     * 回调地址（可选，填"-1"表示直接返回任务ID）
+     */
+    private String webHook;
+
+    /**
+     * 是否关闭进度回复（可选，建议搭配webHook使用）
+     */
+    private Boolean shutProgress;
 }

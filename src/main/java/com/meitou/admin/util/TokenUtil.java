@@ -3,6 +3,8 @@ package com.meitou.admin.util;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
@@ -12,6 +14,8 @@ import java.util.Date;
  * Token工具类
  * 用于解析和验证Token (JWT)
  */
+@Slf4j
+@Component
 public class TokenUtil {
 
     // 随机生成的 SecretKey (HS256 要求至少 32 字节)
@@ -97,6 +101,7 @@ public class TokenUtil {
                     .parseSignedClaims(token)
                     .getPayload();
         } catch (Exception e) {
+            log.error("Token parsing failed: {}", e.getMessage());
             return null;
         }
     }

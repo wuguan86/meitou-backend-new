@@ -1,28 +1,21 @@
 package com.meitou.admin.dto.app;
 
-import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
-/**
- * 图片分析请求 DTO
- */
 @Data
 public class ImageAnalysisRequest {
-    
     /**
-     * 图片URL或base64（必填）
+     * 图片地址
      */
-    @NotBlank(message = "图片不能为空")
     private String image;
     
     /**
-     * 分析方向（可选）
+     * 分析方向/提示词
      */
     private String direction;
     
     /**
-     * 模型名称（可选）
+     * 模型ID
      */
     private String model;
 }
-

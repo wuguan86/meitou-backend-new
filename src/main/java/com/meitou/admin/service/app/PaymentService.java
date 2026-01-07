@@ -40,7 +40,6 @@ import java.util.TreeMap;
 @RequiredArgsConstructor
 public class PaymentService {
     
-    private final PaymentProperties paymentProperties;
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     /**
@@ -438,35 +437,55 @@ public class PaymentService {
     
     /**
      * 解析微信支付配置
-     * 优先使用configJson，如果为空则使用application.yml中的配置
+     * 仅从数据库configJson解析，不使用配置文件兜底
+     * @throws BusinessException 如果配置不存在或不完整
      */
     private PaymentProperties.WechatPayConfig parseWechatConfig(String configJson) {
+        if (!StringUtils.hasText(configJson)) {
+            throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "微信支付未配置，请在后台管理系统中进行配置");
+        }
+
         PaymentProperties.WechatPayConfig config = new PaymentProperties.WechatPayConfig();
         
-        // 如果提供了configJson，优先使用
-        if (StringUtils.hasText(configJson)) {
-            try {
-                JsonNode jsonNode = objectMapper.readTree(configJson);
-                config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getWechat().getAppId());
-                config.setMchId(jsonNode.has("mchId") ? jsonNode.get("mchId").asText() : paymentProperties.getWechat().getMchId());
-                config.setMchKey(jsonNode.has("mchKey") ? jsonNode.get("mchKey").asText() : paymentProperties.getWechat().getMchKey());
-                
-                // 敏感字段解密
-                config.setApiV3Key(jsonNode.has("apiV3Key") ? tryDecrypt(jsonNode.get("apiV3Key").asText()) : paymentProperties.getWechat().getApiV3Key());
-                config.setCertSerialNo(jsonNode.has("certSerialNo") ? jsonNode.get("certSerialNo").asText() : paymentProperties.getWechat().getCertSerialNo());
-                config.setPrivateKey(jsonNode.has("privateKey") ? tryDecrypt(jsonNode.get("privateKey").asText()) : paymentProperties.getWechat().getPrivateKey());
-                config.setCertContent(jsonNode.has("certContent") ? tryDecrypt(jsonNode.get("certContent").asText()) : paymentProperties.getWechat().getCertContent());
-                
-                config.setCertPath(jsonNode.has("certPath") ? jsonNode.get("certPath").asText() : paymentProperties.getWechat().getCertPath());
-                config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getWechat().getNotifyUrl());
-                config.setUseSandbox(jsonNode.has("useSandbox") ? jsonNode.get("useSandbox").asBoolean() : paymentProperties.getWechat().getUseSandbox());
-            } catch (Exception e) {
-                log.warn("解析微信支付配置JSON失败，将使用application.yml中的配置：{}", e.getMessage());
-                config = paymentProperties.getWechat();
+        try {
+            JsonNode jsonNode = objectMapper.readTree(configJson);
+            
+            // 必填字段校验
+            if (!jsonNode.has("appId") || !StringUtils.hasText(jsonNode.get("appId").asText())) {
+                throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "微信支付配置错误：缺少AppID");
             }
-        } else {
-            // 使用application.yml中的配置
-            config = paymentProperties.getWechat();
+            if (!jsonNode.has("mchId") || !StringUtils.hasText(jsonNode.get("mchId").asText())) {
+                throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "微信支付配置错误：缺少商户号");
+            }
+            // 回调地址必填校验
+            if (!jsonNode.has("notifyUrl") || !StringUtils.hasText(jsonNode.get("notifyUrl").asText())) {
+                throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "微信支付配置错误：缺少回调地址");
+            }
+
+            config.setAppId(jsonNode.get("appId").asText());
+            config.setMchId(jsonNode.get("mchId").asText());
+            
+            // 选填字段
+            if (jsonNode.has("mchKey")) config.setMchKey(jsonNode.get("mchKey").asText());
+            
+            // 敏感字段解密
+            if (jsonNode.has("apiV3Key")) config.setApiV3Key(tryDecrypt(jsonNode.get("apiV3Key").asText()));
+            if (jsonNode.has("certSerialNo")) config.setCertSerialNo(jsonNode.get("certSerialNo").asText());
+            if (jsonNode.has("privateKey")) config.setPrivateKey(tryDecrypt(jsonNode.get("privateKey").asText()));
+            if (jsonNode.has("certContent")) config.setCertContent(tryDecrypt(jsonNode.get("certContent").asText()));
+            
+            // 回调地址
+            config.setNotifyUrl(jsonNode.get("notifyUrl").asText());
+            
+            // 其他配置
+            if (jsonNode.has("certPath")) config.setCertPath(jsonNode.get("certPath").asText());
+            if (jsonNode.has("useSandbox")) config.setUseSandbox(jsonNode.get("useSandbox").asBoolean());
+            
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("解析微信支付配置失败", e);
+            throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "解析微信支付配置失败：" + e.getMessage());
         }
         
         return config;
@@ -474,37 +493,56 @@ public class PaymentService {
     
     /**
      * 解析支付宝支付配置
-     * 优先使用configJson，如果为空则使用application.yml中的配置
+     * 仅从数据库configJson解析，不使用配置文件兜底
+     * @throws BusinessException 如果配置不存在或不完整
      */
     private PaymentProperties.AlipayConfig parseAlipayConfig(String configJson) {
+        if (!StringUtils.hasText(configJson)) {
+            throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "支付宝支付未配置，请在后台管理系统中进行配置");
+        }
+
         PaymentProperties.AlipayConfig config = new PaymentProperties.AlipayConfig();
         
-        // 如果提供了configJson，优先使用
-        if (StringUtils.hasText(configJson)) {
-            try {
-                JsonNode jsonNode = objectMapper.readTree(configJson);
-                config.setAppId(jsonNode.has("appId") ? jsonNode.get("appId").asText() : paymentProperties.getAlipay().getAppId());
-                
-                // 敏感字段解密
-                config.setPrivateKey(jsonNode.has("privateKey") ? tryDecrypt(jsonNode.get("privateKey").asText()) : paymentProperties.getAlipay().getPrivateKey());
-                config.setAlipayPublicKey(jsonNode.has("alipayPublicKey") ? tryDecrypt(jsonNode.get("alipayPublicKey").asText()) : paymentProperties.getAlipay().getAlipayPublicKey());
-                config.setAppCertContent(jsonNode.has("appCertContent") ? tryDecrypt(jsonNode.get("appCertContent").asText()) : paymentProperties.getAlipay().getAppCertContent());
-                config.setAlipayRootCertContent(jsonNode.has("alipayRootCertContent") ? tryDecrypt(jsonNode.get("alipayRootCertContent").asText()) : paymentProperties.getAlipay().getAlipayRootCertContent());
-                config.setAlipayCertContent(jsonNode.has("alipayCertContent") ? tryDecrypt(jsonNode.get("alipayCertContent").asText()) : paymentProperties.getAlipay().getAlipayCertContent());
-                
-                config.setNotifyUrl(jsonNode.has("notifyUrl") ? jsonNode.get("notifyUrl").asText() : paymentProperties.getAlipay().getNotifyUrl());
-                config.setReturnUrl(jsonNode.has("returnUrl") ? jsonNode.get("returnUrl").asText() : paymentProperties.getAlipay().getReturnUrl());
-                config.setGatewayUrl(jsonNode.has("gatewayUrl") ? jsonNode.get("gatewayUrl").asText() : paymentProperties.getAlipay().getGatewayUrl());
-                config.setSignType(jsonNode.has("signType") ? jsonNode.get("signType").asText() : paymentProperties.getAlipay().getSignType());
-                config.setCharset(jsonNode.has("charset") ? jsonNode.get("charset").asText() : paymentProperties.getAlipay().getCharset());
-                config.setFormat(jsonNode.has("format") ? jsonNode.get("format").asText() : paymentProperties.getAlipay().getFormat());
-            } catch (Exception e) {
-                log.warn("解析支付宝支付配置JSON失败，将使用application.yml中的配置：{}", e.getMessage());
-                config = paymentProperties.getAlipay();
+        try {
+            JsonNode jsonNode = objectMapper.readTree(configJson);
+            
+            // 必填字段校验
+            if (!jsonNode.has("appId") || !StringUtils.hasText(jsonNode.get("appId").asText())) {
+                throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "支付宝配置错误：缺少AppID");
             }
-        } else {
-            // 使用application.yml中的配置
-            config = paymentProperties.getAlipay();
+            // 回调地址必填校验
+            if (!jsonNode.has("notifyUrl") || !StringUtils.hasText(jsonNode.get("notifyUrl").asText())) {
+                throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "支付宝配置错误：缺少回调地址");
+            }
+            
+            config.setAppId(jsonNode.get("appId").asText());
+            
+            // 敏感字段解密
+            if (jsonNode.has("privateKey")) config.setPrivateKey(tryDecrypt(jsonNode.get("privateKey").asText()));
+            if (jsonNode.has("alipayPublicKey")) config.setAlipayPublicKey(tryDecrypt(jsonNode.get("alipayPublicKey").asText()));
+            if (jsonNode.has("appCertContent")) config.setAppCertContent(tryDecrypt(jsonNode.get("appCertContent").asText()));
+            if (jsonNode.has("alipayRootCertContent")) config.setAlipayRootCertContent(tryDecrypt(jsonNode.get("alipayRootCertContent").asText()));
+            if (jsonNode.has("alipayCertContent")) config.setAlipayCertContent(tryDecrypt(jsonNode.get("alipayCertContent").asText()));
+            
+            // 回调地址
+            config.setNotifyUrl(jsonNode.get("notifyUrl").asText());
+            
+            // 其他配置
+            if (jsonNode.has("returnUrl")) config.setReturnUrl(jsonNode.get("returnUrl").asText());
+            // 网关地址默认为正式环境，如果配置中有则覆盖
+            config.setGatewayUrl(jsonNode.has("gatewayUrl") && StringUtils.hasText(jsonNode.get("gatewayUrl").asText()) 
+                ? jsonNode.get("gatewayUrl").asText() 
+                : "https://openapi.alipay.com/gateway.do");
+                
+            if (jsonNode.has("signType")) config.setSignType(jsonNode.get("signType").asText());
+            if (jsonNode.has("charset")) config.setCharset(jsonNode.get("charset").asText());
+            if (jsonNode.has("format")) config.setFormat(jsonNode.get("format").asText());
+            
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("解析支付宝支付配置失败", e);
+            throw new BusinessException(ErrorCode.PAYMENT_CONFIG_ERROR.getCode(), "解析支付宝支付配置失败：" + e.getMessage());
         }
         
         return config;

@@ -28,4 +28,10 @@ public class ImageGenerationResponse {
      * 错误消息（如果失败）
      */
     private String errorMessage;
+    private Integer progress;
+    
+    /**
+     * 视频URL（用于视频生成任务）
+     */
+    private String videoUrl;
 }

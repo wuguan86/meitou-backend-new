@@ -21,11 +21,18 @@ public class DashboardController {
      * 获取统计数据
      * 
      * @param siteId 站点ID（可选）
+     * @param timeRange 时间范围
+     * @param startDate 开始日期
+     * @param endDate 结束日期
      * @return 统计数据
      */
     @GetMapping("/stats")
-    public Result<Map<String, Object>> getStats(@RequestParam(required = false) Long siteId) {
-        Map<String, Object> stats = dashboardService.getStats(siteId);
+    public Result<Map<String, Object>> getStats(
+            @RequestParam(required = false) Long siteId,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
+        Map<String, Object> stats = dashboardService.getStats(siteId, timeRange, startDate, endDate);
         return Result.success(stats);
     }
     
@@ -33,11 +40,18 @@ public class DashboardController {
      * 获取趋势数据
      * 
      * @param siteId 站点ID（可选）
+     * @param timeRange 时间范围
+     * @param startDate 开始日期
+     * @param endDate 结束日期
      * @return 趋势数据
      */
     @GetMapping("/trend")
-    public Result<Map<String, Object>> getTrend(@RequestParam(required = false) Long siteId) {
-        Map<String, Object> trend = dashboardService.getTrend(siteId);
+    public Result<Map<String, Object>> getTrend(
+            @RequestParam(required = false) Long siteId,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
+        Map<String, Object> trend = dashboardService.getTrend(siteId, timeRange, startDate, endDate);
         return Result.success(trend);
     }
     
@@ -45,11 +59,18 @@ public class DashboardController {
      * 获取排名数据
      * 
      * @param siteId 站点ID（可选）
+     * @param timeRange 时间范围
+     * @param startDate 开始日期
+     * @param endDate 结束日期
      * @return 排名数据
      */
     @GetMapping("/ranking")
-    public Result<Map<String, Object>> getRanking(@RequestParam(required = false) Long siteId) {
-        Map<String, Object> ranking = dashboardService.getRanking(siteId);
+    public Result<Map<String, Object>> getRanking(
+            @RequestParam(required = false) Long siteId,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
+        Map<String, Object> ranking = dashboardService.getRanking(siteId, timeRange, startDate, endDate);
         return Result.success(ranking);
     }
 }

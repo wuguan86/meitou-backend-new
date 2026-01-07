@@ -12,6 +12,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.stream.Collectors;
 
+import org.springframework.dao.DataAccessException;
+import java.sql.SQLException;
+
 /**
  * 全局异常处理器
  * 统一处理异常，返回友好的错误信息
@@ -20,6 +23,16 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     
+    /**
+     * 处理数据库操作异常
+     */
+    @ExceptionHandler({DataAccessException.class, SQLException.class})
+    public ResponseEntity<Result<?>> handleDatabaseException(Exception e) {
+        log.error("数据库操作异常: ", e);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Result.error(500, "数据库操作失败，请联系管理员"));
+    }
+
     /**
      * 处理业务异常
      * 返回 HTTP 200，但在响应体中包含业务错误码
@@ -64,7 +77,7 @@ public class GlobalExceptionHandler {
         log.error("运行时异常: ", e);
         // 运行时异常通常视为系统错误，返回 500
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Result.error(500, "系统处理请求时发生错误: " + e.getMessage()));
+                .body(Result.error(500, "系统处理请求时发生错误，请联系管理员"));
     }
     
     /**

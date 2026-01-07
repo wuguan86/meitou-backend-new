@@ -7,9 +7,13 @@ import com.meitou.admin.dto.app.ImageAnalysisRequest;
 import com.meitou.admin.dto.app.VideoAnalysisRequest;
 import com.meitou.admin.entity.ApiInterface;
 import com.meitou.admin.entity.ApiPlatform;
+import com.meitou.admin.entity.AnalysisRecord;
 import com.meitou.admin.common.SiteContext;
 import com.meitou.admin.entity.GenerationRecord;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
+import com.meitou.admin.mapper.AnalysisRecordMapper;
 import com.meitou.admin.mapper.GenerationRecordMapper;
 import com.meitou.admin.mapper.UserMapper;
 import com.meitou.admin.service.admin.ApiPlatformService;
@@ -34,6 +38,7 @@ public class AnalysisService {
     
     private final ApiPlatformService apiPlatformService;
     private final GenerationRecordMapper generationRecordMapper;
+    private final AnalysisRecordMapper analysisRecordMapper;
     private final UserMapper userMapper;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -43,9 +48,11 @@ public class AnalysisService {
      */
     public AnalysisService(ApiPlatformService apiPlatformService, 
                            GenerationRecordMapper generationRecordMapper,
+                           AnalysisRecordMapper analysisRecordMapper,
                            UserMapper userMapper) {
         this.apiPlatformService = apiPlatformService;
         this.generationRecordMapper = generationRecordMapper;
+        this.analysisRecordMapper = analysisRecordMapper;
         this.userMapper = userMapper;
         
         // 配置RestTemplate的超时时间
@@ -67,24 +74,24 @@ public class AnalysisService {
         // 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 根据类型查找对应的API平台（type=image_analysis）
         ApiPlatform platform = findPlatformByType("image_analysis", null);
         if (platform == null) {
-            throw new RuntimeException("图片分析平台未配置，请在后台API接口管理中配置类型为'图片分析'的平台");
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "图片分析平台未配置，请在后台API接口管理中配置类型为'图片分析'的平台");
         }
         
         // 检查apiKey是否有效
         if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+            throw new BusinessException(ErrorCode.API_KEY_ERROR.getCode(), "API密钥未配置或解密失败，请重新设置API密钥");
         }
         
         // 获取图片分析接口配置
         ApiInterface analysisInterface = findAnalysisInterface(platform.getId());
         if (analysisInterface == null) {
-            throw new RuntimeException("图片分析接口未配置");
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "图片分析接口未配置");
         }
         
         try {
@@ -135,7 +142,7 @@ public class AnalysisService {
                 log.error("保存失败记录时出错：{}", ex.getMessage());
             }
             
-            throw new RuntimeException("图片分析失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "图片分析失败：" + e.getMessage());
         }
     }
     
@@ -151,26 +158,35 @@ public class AnalysisService {
         // 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
-            throw new RuntimeException("用户不存在");
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
         
         // 根据类型查找对应的API平台（type=video_analysis）
         ApiPlatform platform = findPlatformByType("video_analysis", null);
         if (platform == null) {
-            throw new RuntimeException("视频分析平台未配置，请在后台API接口管理中配置类型为'视频分析'的平台");
+            throw new BusinessException(ErrorCode.GENERATION_PLATFORM_NOT_CONFIGURED.getCode(), "视频分析平台未配置，请在后台API接口管理中配置类型为'视频分析'的平台");
         }
         
         // 检查apiKey是否有效
         if (platform.getApiKey() == null || platform.getApiKey().isEmpty()) {
-            throw new RuntimeException("API密钥未配置或解密失败，请重新设置API密钥");
+            throw new BusinessException(ErrorCode.API_KEY_ERROR.getCode(), "API密钥未配置或解密失败，请重新设置API密钥");
         }
         
         // 获取视频分析接口配置
         ApiInterface analysisInterface = findAnalysisInterface(platform.getId());
         if (analysisInterface == null) {
-            throw new RuntimeException("视频分析接口未配置");
+            throw new BusinessException(ErrorCode.GENERATION_INTERFACE_NOT_CONFIGURED.getCode(), "视频分析接口未配置");
         }
         
+        // Save Analysis Record (Pending)
+        AnalysisRecord analysisRecord = new AnalysisRecord();
+        analysisRecord.setUserId(userId);
+        analysisRecord.setType("video");
+        analysisRecord.setContent(request.getVideo());
+        analysisRecord.setStatus(0); // Pending
+        analysisRecord.setSiteId(SiteContext.getSiteId());
+        analysisRecordMapper.insert(analysisRecord);
+
         try {
             // 构建请求参数
             Map<String, Object> apiRequest = buildVideoAnalysisRequest(request, platform);
@@ -181,6 +197,11 @@ public class AnalysisService {
             // 解析响应
             String result = parseAnalysisResult(responseJson, analysisInterface.getResponseMode());
             
+            // Update Analysis Record (Success)
+            analysisRecord.setStatus(1);
+            analysisRecord.setResult(result);
+            analysisRecordMapper.updateById(analysisRecord);
+
             // 保存分析记录
             GenerationRecord record = new GenerationRecord();
             record.setUserId(userId);
@@ -204,6 +225,13 @@ public class AnalysisService {
         } catch (Exception e) {
             log.error("视频分析失败：{}", e.getMessage(), e);
             
+            // Update Analysis Record (Failed)
+            if (analysisRecord.getId() != null) {
+                analysisRecord.setStatus(2);
+                analysisRecord.setErrorMsg(e.getMessage());
+                analysisRecordMapper.updateById(analysisRecord);
+            }
+
             // 保存失败记录
             try {
                 GenerationRecord record = new GenerationRecord();
@@ -219,7 +247,7 @@ public class AnalysisService {
                 log.error("保存失败记录时出错：{}", ex.getMessage());
             }
             
-            throw new RuntimeException("视频分析失败：" + e.getMessage());
+            throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "视频分析失败：" + e.getMessage());
         }
     }
     

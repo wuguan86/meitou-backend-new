@@ -88,6 +88,66 @@ public class AliOssServiceImpl implements FileStorageService {
         }
     }
     
+    @Override
+    public String upload(InputStream inputStream, String folder, String fileName) throws Exception {
+        // 构建对象键（文件路径）
+        String objectKey;
+        if (folder != null && !folder.isEmpty()) {
+            // 确保文件夹路径以 / 结尾
+            if (!folder.endsWith("/")) {
+                folder = folder + "/";
+            }
+            objectKey = folder + fileName;
+        } else {
+            objectKey = fileName;
+        }
+
+        try {
+            // 设置对象元数据
+            ObjectMetadata metadata = new ObjectMetadata();
+            // 注意：如果知道内容长度，最好设置 ContentLength，否则 OSS 可能会报错或需要缓存整个流
+            // 这里我们不强制设置 ContentLength，但如果可以获取到最好设置
+            // metadata.setContentLength(size); 
+            // 简单起见，不设置长度，OSS SDK 会自动处理（可能会缓存）
+
+            // 创建上传请求
+            PutObjectRequest putObjectRequest = new PutObjectRequest(
+                    bucketName,
+                    objectKey,
+                    inputStream,
+                    metadata
+            );
+
+            // 执行上传
+            ossClient.putObject(putObjectRequest);
+
+            // 构建文件访问URL
+            String fileUrl;
+            if (domain != null && !domain.isEmpty()) {
+                // 使用自定义域名
+                if (domain.endsWith("/")) {
+                    fileUrl = domain + objectKey;
+                } else {
+                    fileUrl = domain + "/" + objectKey;
+                }
+            } else {
+                // 使用默认域名
+                // 格式：https://bucket-name.endpoint/object-key
+                fileUrl = String.format("https://%s.%s/%s", bucketName, endpoint, objectKey);
+            }
+
+            log.info("文件上传成功：{} -> {}", fileName, fileUrl);
+            return fileUrl;
+
+        } catch (OSSException e) {
+            log.error("阿里云OSS上传失败：{}", e.getMessage(), e);
+            throw new Exception("文件上传失败：" + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("阿里云OSS上传失败：{}", e.getMessage(), e);
+            throw new Exception("文件上传失败：" + e.getMessage(), e);
+        }
+    }
+
     /**
      * 上传文件到阿里云OSS
      * 
@@ -110,65 +170,7 @@ public class AliOssServiceImpl implements FileStorageService {
         }
         String fileName = UUID.randomUUID().toString().replace("-", "") + extension;
         
-        // 构建对象键（文件路径）
-        String objectKey;
-        if (folder != null && !folder.isEmpty()) {
-            // 确保文件夹路径以 / 结尾
-            if (!folder.endsWith("/")) {
-                folder = folder + "/";
-            }
-            objectKey = folder + fileName;
-        } else {
-            objectKey = fileName;
-        }
-        
-        try {
-            // 获取文件输入流
-            InputStream inputStream = file.getInputStream();
-            
-            // 设置对象元数据
-            ObjectMetadata metadata = new ObjectMetadata();
-            metadata.setContentLength(file.getSize());
-            if (file.getContentType() != null) {
-                metadata.setContentType(file.getContentType());
-            }
-            
-            // 创建上传请求
-            PutObjectRequest putObjectRequest = new PutObjectRequest(
-                    bucketName,
-                    objectKey,
-                    inputStream,
-                    metadata
-            );
-            
-            // 执行上传
-            ossClient.putObject(putObjectRequest);
-            
-            // 构建文件访问URL
-            String fileUrl;
-            if (domain != null && !domain.isEmpty()) {
-                // 使用自定义域名
-                if (domain.endsWith("/")) {
-                    fileUrl = domain + objectKey;
-                } else {
-                    fileUrl = domain + "/" + objectKey;
-                }
-            } else {
-                // 使用默认域名
-                // 格式：https://bucket-name.endpoint/object-key
-                fileUrl = String.format("https://%s.%s/%s", bucketName, endpoint, objectKey);
-            }
-            
-            log.info("文件上传成功：{} -> {}", originalFilename, fileUrl);
-            return fileUrl;
-            
-        } catch (OSSException e) {
-            log.error("阿里云OSS上传失败：{}", e.getMessage(), e);
-            throw new Exception("文件上传失败：" + e.getMessage(), e);
-        } catch (Exception e) {
-            log.error("阿里云OSS上传失败：{}", e.getMessage(), e);
-            throw new Exception("文件上传失败：" + e.getMessage(), e);
-        }
+        return upload(file.getInputStream(), folder, fileName);
     }
 }
 

@@ -8,11 +8,13 @@ import com.meitou.admin.dto.app.*;
 import com.meitou.admin.entity.PaymentConfig;
 import com.meitou.admin.entity.RechargeOrder;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.entity.UserTransaction;
 import com.meitou.admin.exception.BusinessException;
 import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.PaymentConfigMapper;
 import com.meitou.admin.mapper.RechargeOrderMapper;
 import com.meitou.admin.mapper.UserMapper;
+import com.meitou.admin.mapper.UserTransactionMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,6 +38,7 @@ public class RechargeService {
     
     private final RechargeOrderMapper rechargeOrderMapper;
     private final UserMapper userMapper;
+    private final UserTransactionMapper userTransactionMapper;
     private final PaymentConfigMapper paymentConfigMapper;
     private final RechargeConfigService rechargeConfigService;
     private final PaymentService paymentService;
@@ -233,8 +236,24 @@ public class RechargeService {
             // 更新用户余额（原子操作）
             User user = userMapper.selectById(order.getUserId());
             if (user != null) {
-                user.setBalance((user.getBalance() != null ? user.getBalance() : 0) + order.getPoints());
+                int oldBalance = user.getBalance() != null ? user.getBalance() : 0;
+                int newBalance = oldBalance + order.getPoints();
+                user.setBalance(newBalance);
                 userMapper.updateById(user);
+                
+                // 记录流水
+                UserTransaction transaction = new UserTransaction();
+                transaction.setUserId(user.getId());
+                transaction.setType("RECHARGE");
+                transaction.setAmount(order.getPoints());
+                transaction.setBalanceAfter(newBalance);
+                transaction.setReferenceId(order.getId());
+                transaction.setDescription("算力充值");
+                transaction.setSiteId(order.getSiteId());
+                transaction.setCreatedAt(LocalDateTime.now());
+                transaction.setDeleted(0);
+                userTransactionMapper.insert(transaction);
+                
                 log.info("用户余额更新成功：用户ID={}, 增加算力={}, 当前余额={}", 
                     user.getId(), order.getPoints(), user.getBalance());
             }

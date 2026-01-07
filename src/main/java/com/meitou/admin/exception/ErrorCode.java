@@ -52,7 +52,8 @@ public enum ErrorCode {
     RECHARGE_AMOUNT_INVALID(4005, "充值金额无效"),
     PAYMENT_METHOD_DISABLED(4006, "支付方式未启用"),
     PAYMENT_METHOD_NOT_SUPPORTED(4007, "不支持的支付方式"),
-    ORDER_STATUS_INVALID(4008, "订单状态无效");
+    ORDER_STATUS_INVALID(4008, "订单状态无效"),
+    INSUFFICIENT_BALANCE(4009, "算力不足，请充值");
     
     private final Integer code;
     private final String message;

@@ -116,6 +116,21 @@ public class SiteService extends ServiceImpl<SiteMapper, Site> {
             existing.setManual(site.getManual());
         }
         
+        // 更新用户协议
+        if (site.getUserAgreement() != null) {
+            existing.setUserAgreement(site.getUserAgreement());
+        }
+        
+        // 更新隐私政策
+        if (site.getPrivacyPolicy() != null) {
+            existing.setPrivacyPolicy(site.getPrivacyPolicy());
+        }
+
+        // 更新版权信息
+        if (site.getCopyright() != null) {
+            existing.setCopyright(site.getCopyright());
+        }
+        
         // 更新描述
         if (site.getDescription() != null) {
             existing.setDescription(site.getDescription());

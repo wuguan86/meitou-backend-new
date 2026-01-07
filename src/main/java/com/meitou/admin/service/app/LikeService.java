@@ -10,6 +10,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 /**
  * 点赞服务类
  * 处理点赞相关业务逻辑
@@ -74,5 +79,27 @@ public class LikeService extends ServiceImpl<LikeMapper, Like> {
         wrapper.eq(Like::getUserId, userId);
         wrapper.eq(Like::getContentId, contentId);
         return likeMapper.selectCount(wrapper) > 0;
+    }
+
+    /**
+     * 批量获取用户点赞的内容ID集合
+     * 
+     * @param userId 用户ID
+     * @param contentIds 内容ID列表
+     * @return 已点赞的内容ID集合
+     */
+    public Set<Long> getLikedContentIds(Long userId, List<Long> contentIds) {
+        if (contentIds == null || contentIds.isEmpty()) {
+            return Collections.emptySet();
+        }
+        
+        LambdaQueryWrapper<Like> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Like::getUserId, userId);
+        wrapper.in(Like::getContentId, contentIds);
+        wrapper.select(Like::getContentId); // 只查询ID字段
+        
+        return likeMapper.selectList(wrapper).stream()
+                .map(Like::getContentId)
+                .collect(Collectors.toSet());
     }
 }

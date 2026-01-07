@@ -91,6 +91,12 @@ public class GenerationRecord {
     private String contentUrl;
     
     /**
+     * 逻辑删除：0-未删除，1-已删除
+     */
+    @TableLogic
+    private Integer deleted;
+
+    /**
      * 创建时间
      */
     @TableField(fill = FieldFill.INSERT)
@@ -102,10 +108,5 @@ public class GenerationRecord {
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updatedAt;
     
-    /**
-     * 逻辑删除：0-未删除，1-已删除
-     */
-    @TableLogic
-    private Integer deleted;
 }
 

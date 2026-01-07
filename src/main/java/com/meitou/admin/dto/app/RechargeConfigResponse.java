@@ -2,6 +2,8 @@ package com.meitou.admin.dto.app;
 
 import lombok.Data;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * 充值配置响应 DTO
@@ -35,6 +37,11 @@ public class RechargeConfigResponse {
     private List<String> enabledPaymentMethods;
     
     /**
+     * 对公转账信息（JSON字符串或对象）
+     */
+    private BankInfo bankInfo;
+    
+    /**
      * 充值选项内部类
      */
     @Data
@@ -48,6 +55,19 @@ public class RechargeConfigResponse {
          * 价格（元）
          */
         private Integer price;
+    }
+
+    /**
+     * 银行信息内部类
+     */
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class BankInfo {
+        private String bankName;      // 开户银行
+        private String accountName;   // 账户名称
+        
+        @JsonProperty("bankAccount")
+        private String accountNumber; // 银行账号
     }
 }
 

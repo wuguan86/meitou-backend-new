@@ -10,6 +10,17 @@ public interface FileStorageService {
     
     /**
      * 上传文件到云存储
+     *
+     * @param inputStream 文件输入流
+     * @param folder 存储文件夹路径（可选，如 "images/", "videos/" 等）
+     * @param fileName 文件名（包含扩展名）
+     * @return 文件的访问URL
+     * @throws Exception 上传失败时抛出异常
+     */
+    String upload(java.io.InputStream inputStream, String folder, String fileName) throws Exception;
+
+    /**
+     * 上传文件到云存储
      * 
      * @param file 要上传的文件
      * @param folder 存储文件夹路径（可选，如 "images/", "videos/" 等）

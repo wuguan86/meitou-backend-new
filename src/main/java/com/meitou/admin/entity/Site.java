@@ -47,6 +47,21 @@ public class Site {
      * 使用手册
      */
     private String manual;
+
+    /**
+     * 用户协议
+     */
+    private String userAgreement;
+
+    /**
+     * 隐私政策
+     */
+    private String privacyPolicy;
+
+    /**
+     * 版权信息
+     */
+    private String copyright;
     
     /**
      * 创建时间

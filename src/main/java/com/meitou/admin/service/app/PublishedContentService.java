@@ -12,8 +12,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 发布内容服务类
@@ -25,6 +30,7 @@ public class PublishedContentService extends ServiceImpl<PublishedContentMapper,
     
     private final PublishedContentMapper contentMapper;
     private final UserMapper userMapper;
+    private final LikeService likeService;
     
     /**
      * 发布内容
@@ -93,12 +99,14 @@ public class PublishedContentService extends ServiceImpl<PublishedContentMapper,
     }
     
     /**
-     * 获取发布内容列表（支持类型筛选）
+     * 获取发布内容列表（支持分页、类型筛选和点赞状态）
      * 
-     * @param type 类型筛选（可选：image、video，如果为null或"all"则返回所有类型）
-     * @return 发布内容列表（按置顶优先、发布时间倒序排列）
+     * @param page 分页参数
+     * @param type 类型筛选
+     * @param userId 当前用户ID（可选，用于检查点赞状态）
+     * @return 分页发布内容列表
      */
-    public List<PublishedContent> getPublishedContents(String type) {
+    public IPage<PublishedContent> getPublishedContents(Page<PublishedContent> page, String type, Long userId) {
         LambdaQueryWrapper<PublishedContent> wrapper = new LambdaQueryWrapper<>();
         
         // 只查询已发布的内容
@@ -113,7 +121,36 @@ public class PublishedContentService extends ServiceImpl<PublishedContentMapper,
         wrapper.orderByDesc(PublishedContent::getIsPinned);
         wrapper.orderByDesc(PublishedContent::getPublishedAt);
         
-        return contentMapper.selectList(wrapper);
+        IPage<PublishedContent> result = contentMapper.selectPage(page, wrapper);
+        
+        // 如果有用户ID且结果不为空，批量获取点赞状态
+        if (userId != null && !result.getRecords().isEmpty()) {
+            List<Long> contentIds = result.getRecords().stream()
+                    .map(PublishedContent::getId)
+                    .collect(Collectors.toList());
+            
+            Set<Long> likedIds = likeService.getLikedContentIds(userId, contentIds);
+            
+            // 设置isLiked状态
+            result.getRecords().forEach(item -> {
+                item.setIsLiked(likedIds.contains(item.getId()));
+            });
+        } else {
+            // 没登录或者没数据，全部设为false
+            result.getRecords().forEach(item -> item.setIsLiked(false));
+        }
+        
+        return result;
+    }
+
+    /**
+     * 获取发布内容列表（旧方法，保留兼容性，建议使用分页版）
+     * 
+     * @param type 类型筛选
+     * @return 发布内容列表
+     */
+    public List<PublishedContent> getPublishedContents(String type) {
+        return getPublishedContents(new Page<>(1, 100), type, null).getRecords();
     }
     
     /**

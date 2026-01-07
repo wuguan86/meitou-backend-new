@@ -2,6 +2,7 @@ package com.meitou.admin.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -45,6 +46,8 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable()) // 禁用CSRF（前后端分离项目）
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)) // 无状态会话
             .authorizeHttpRequests(auth -> auth
+                // 允许跨域预检请求
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 // 公开接口
                 .requestMatchers(
                         "/api/app/auth/send-code",
@@ -52,7 +55,9 @@ public class SecurityConfig {
                         "/api/app/auth/login-by-password",
                         "/api/app/user/avatar/**",
                         "/api/app/site/**",
+                        "/api/app/recharge/callback/**",
                         "/api/admin/auth/login",
+                        "/api/debug/**",
                         "/error"
                 ).permitAll()
                 // 管理端接口需要 ADMIN 角色

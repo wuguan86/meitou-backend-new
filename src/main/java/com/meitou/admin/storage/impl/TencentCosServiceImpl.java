@@ -101,6 +101,62 @@ public class TencentCosServiceImpl implements FileStorageService {
         }
     }
     
+    @Override
+    public String upload(InputStream inputStream, String folder, String fileName) throws Exception {
+        // 构建对象键（文件路径）
+        String objectKey;
+        if (folder != null && !folder.isEmpty()) {
+            // 确保文件夹路径以 / 结尾
+            if (!folder.endsWith("/")) {
+                folder = folder + "/";
+            }
+            objectKey = folder + fileName;
+        } else {
+            objectKey = fileName;
+        }
+
+        try {
+            // 设置对象元数据
+            ObjectMetadata metadata = new ObjectMetadata();
+            // 腾讯云COS可能需要ContentLength，如果不设置可能会有警告或问题，
+            // 但如果流不可重复读且未设置长度，SDK可能会缓存流。
+            // 这里为了通用性暂不设置长度。
+
+            // 创建上传请求
+            PutObjectRequest putObjectRequest = new PutObjectRequest(
+                    bucketName,
+                    objectKey,
+                    inputStream,
+                    metadata
+            );
+
+            // 执行上传
+            cosClient.putObject(putObjectRequest);
+
+            // 构建文件访问URL
+            String fileUrl;
+            if (domain != null && !domain.isEmpty()) {
+                // 使用自定义域名
+                if (domain.endsWith("/")) {
+                    fileUrl = domain + objectKey;
+                } else {
+                    fileUrl = domain + "/" + objectKey;
+                }
+            } else {
+                // 使用默认域名
+                fileUrl = String.format("https://%s.cos.%s.myqcloud.com/%s", 
+                        bucketName, region, objectKey);
+            }
+
+            log.info("文件上传成功：{} -> {}", fileName, fileUrl);
+            return fileUrl;
+
+        } catch (CosClientException e) {
+            log.error("腾讯云COS上传失败：{}", e.getMessage(), e);
+            throw new Exception("文件上传失败：" + e.getMessage(), e);
+        }
+    }
+
     /**
      * 上传文件到腾讯云COS
      * 
@@ -123,60 +179,7 @@ public class TencentCosServiceImpl implements FileStorageService {
         }
         String fileName = UUID.randomUUID().toString().replace("-", "") + extension;
         
-        // 构建对象键（文件路径）
-        String objectKey;
-        if (folder != null && !folder.isEmpty()) {
-            // 确保文件夹路径以 / 结尾
-            if (!folder.endsWith("/")) {
-                folder = folder + "/";
-            }
-            objectKey = folder + fileName;
-        } else {
-            objectKey = fileName;
-        }
-        
-        try {
-            // 获取文件输入流
-            InputStream inputStream = file.getInputStream();
-            
-            // 设置对象元数据
-            ObjectMetadata metadata = new ObjectMetadata();
-            metadata.setContentLength(file.getSize());
-            metadata.setContentType(file.getContentType());
-            
-            // 创建上传请求
-            PutObjectRequest putObjectRequest = new PutObjectRequest(
-                    bucketName,
-                    objectKey,
-                    inputStream,
-                    metadata
-            );
-            
-            // 执行上传
-            cosClient.putObject(putObjectRequest);
-            
-            // 构建文件访问URL
-            String fileUrl;
-            if (domain != null && !domain.isEmpty()) {
-                // 使用自定义域名
-                if (domain.endsWith("/")) {
-                    fileUrl = domain + objectKey;
-                } else {
-                    fileUrl = domain + "/" + objectKey;
-                }
-            } else {
-                // 使用默认域名
-                fileUrl = String.format("https://%s.cos.%s.myqcloud.com/%s", 
-                        bucketName, region, objectKey);
-            }
-            
-            log.info("文件上传成功：{} -> {}", originalFilename, fileUrl);
-            return fileUrl;
-            
-        } catch (CosClientException e) {
-            log.error("腾讯云COS上传失败：{}", e.getMessage(), e);
-            throw new Exception("文件上传失败：" + e.getMessage(), e);
-        }
+        return upload(file.getInputStream(), folder, fileName);
     }
 }
 

@@ -71,15 +71,44 @@ public class UserService extends ServiceImpl<UserMapper, User> {
      * @return 创建的用户
      */
     public User createUser(User user) {
-        // 检查邮箱是否已存在
-        LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(User::getEmail, user.getEmail());
-        wrapper.eq(User::getDeleted, 0);
-        User existing = userMapper.selectOne(wrapper);
-        if (existing != null) {
-            throw new RuntimeException("邮箱已存在");
+        // 手机号必填校验
+        if (user.getPhone() == null || user.getPhone().trim().isEmpty()) {
+            throw new RuntimeException("手机号不能为空");
+        }
+
+        // 检查手机号是否已存在
+        if (user.getPhone() != null && !user.getPhone().isEmpty()) {
+            LambdaQueryWrapper<User> phoneWrapper = new LambdaQueryWrapper<>();
+            phoneWrapper.eq(User::getPhone, user.getPhone());
+            phoneWrapper.eq(User::getDeleted, 0);
+            if (userMapper.selectCount(phoneWrapper) > 0) {
+                throw new RuntimeException("手机号已存在");
+            }
+        }
+
+        // 处理邮箱
+        if (user.getEmail() != null && !user.getEmail().trim().isEmpty()) {
+            // 检查邮箱是否已存在
+            LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(User::getEmail, user.getEmail());
+            wrapper.eq(User::getDeleted, 0);
+            User existing = userMapper.selectOne(wrapper);
+            if (existing != null) {
+                throw new RuntimeException("邮箱已存在");
+            }
+        } else {
+            user.setEmail(null); // 邮箱为空时设置为null
         }
         
+        // 处理用户名
+        if (user.getUsername() == null || user.getUsername().trim().isEmpty()) {
+            if (user.getPhone() != null && user.getPhone().length() >= 4) {
+                user.setUsername("用户_" + user.getPhone().substring(user.getPhone().length() - 4));
+            } else {
+                user.setUsername("用户_" + System.currentTimeMillis() % 10000);
+            }
+        }
+
         // 加密密码
         if (user.getPassword() != null && !user.getPassword().isEmpty()) {
             user.setPassword(passwordEncoder.encode(user.getPassword()));

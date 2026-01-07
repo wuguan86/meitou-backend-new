@@ -66,11 +66,11 @@ public class TextToVideoRequest {
     private Boolean shutProgress;
     
     /**
-     * 视频时长（可选，单位：秒，默认5秒）
+     * 视频时长（可选，单位：秒，默认10秒）
      */
     @Min(value = 1, message = "视频时长最少为1秒")
     @Max(value = 60, message = "视频时长最多为60秒")
-    private Integer duration = 5;
+    private Integer duration = 10;
     
     /**
      * 分辨率（可选，如：1K, 2K, 4K）
