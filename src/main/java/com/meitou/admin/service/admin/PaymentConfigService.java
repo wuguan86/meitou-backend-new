@@ -26,8 +26,14 @@ public class PaymentConfigService extends ServiceImpl<PaymentConfigMapper, Payme
     
     // 敏感字段集合，需要加密存储和脱敏显示
     private static final Set<String> SENSITIVE_FIELDS = new HashSet<>(Arrays.asList(
-            "apiV3Key", "privateKey", "certContent", "appCertContent", 
-            "alipayRootCertContent", "alipayCertContent", "alipayPublicKey"
+            "apiV3Key",
+            "privateKey",
+            "certContent",
+            "wechatPayPublicKey",
+            "appCertContent",
+            "alipayRootCertContent",
+            "alipayCertContent",
+            "alipayPublicKey"
     ));
     
     /**

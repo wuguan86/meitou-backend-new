@@ -49,6 +49,16 @@ public class PaymentProperties {
          * 证书序列号（用于APIv3）
          */
         private String certSerialNo;
+
+        /**
+         * 微信支付平台公钥ID（公钥模式）
+         */
+        private String wechatPayPublicKeyId;
+
+        /**
+         * 微信支付平台公钥内容（PEM格式，公钥模式）
+         */
+        private String wechatPayPublicKey;
         
         /**
          * 证书文件路径（.p12格式）

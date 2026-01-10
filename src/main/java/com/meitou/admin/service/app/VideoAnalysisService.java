@@ -131,16 +131,20 @@ public class VideoAnalysisService {
         // 5. Deduct Credits
         int finalCost = cost;
         String finalModel = actualModel;
-        User currentUser = userMapper.selectById(userId);
-        if (currentUser.getBalance() < finalCost) {
-            throw new BusinessException(ErrorCode.INSUFFICIENT_BALANCE);
+        if (finalCost < 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR.getCode(), "扣费配置异常");
         }
 
         AnalysisRecord analysisRecord = transactionTemplate.execute(status -> {
-            // Deduct points
-            int newBalance = currentUser.getBalance() - finalCost;
-            currentUser.setBalance(newBalance);
-            userMapper.updateById(currentUser);
+            if (finalCost > 0) {
+                int updatedRows = userMapper.deductBalance(userId, finalCost);
+                if (updatedRows == 0) {
+                    throw new BusinessException(ErrorCode.INSUFFICIENT_BALANCE);
+                }
+            }
+
+            User userAfter = userMapper.selectById(userId);
+            int balanceAfter = (userAfter != null && userAfter.getBalance() != null) ? userAfter.getBalance() : 0;
 
             // Save Analysis Record (Pending)
             AnalysisRecord record = new AnalysisRecord();
@@ -156,7 +160,7 @@ public class VideoAnalysisService {
             transaction.setUserId(userId);
             transaction.setType("CONSUME");
             transaction.setAmount(-finalCost);
-            transaction.setBalanceAfter(newBalance);
+            transaction.setBalanceAfter(balanceAfter);
             transaction.setDescription("视频分析-" + finalModel);
             transaction.setReferenceId(record.getId());
             transaction.setSiteId(SiteContext.getSiteId());

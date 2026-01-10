@@ -67,8 +67,18 @@ public class ImageToVideoRequest {
     private Integer duration = 5;
     
     /**
-     * 分辨率（可选，如：1K, 2K, 4K）
+     * 分辨率
      */
     private String resolution;
+
+    /**
+     * remix目标id.续写视频id
+     */
+    private String remixTargetId;
+
+    /**
+     *上传角色视频，支持多角色(不可上传真人视频)
+     */
+    private List<Object> characters;
 }
 

@@ -50,6 +50,9 @@ public interface UserMapper extends BaseMapper<User> {
     @Update("UPDATE users SET balance = balance - #{cost} WHERE id = #{userId} AND balance >= #{cost}")
     int deductBalance(@Param("userId") Long userId, @Param("cost") Integer cost);
 
+    @Update("UPDATE users SET balance = balance + #{delta} WHERE id = #{userId}")
+    int incrementBalance(@Param("userId") Long userId, @Param("delta") Integer delta);
+
     /**
      * 根据手机号查询用户（包含已删除的）
      * @param phone 手机号

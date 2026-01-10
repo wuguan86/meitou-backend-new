@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.meitou.admin.entity.User;
+import com.meitou.admin.exception.BusinessException;
+import com.meitou.admin.exception.ErrorCode;
 import com.meitou.admin.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -197,10 +199,15 @@ public class UserService extends ServiceImpl<UserMapper, User> {
      * @return 更新后的用户
      */
     public User giftPoints(Long id, Integer points) {
-        User user = getUserById(id);
-        user.setBalance(user.getBalance() + points);
-        userMapper.updateById(user);
-        return user;
+        if (points == null || points <= 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR.getCode(), "积分数量必须大于0");
+        }
+        getUserById(id);
+        int updatedRows = userMapper.incrementBalance(id, points);
+        if (updatedRows <= 0) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR);
+        }
+        return userMapper.selectById(id);
     }
 }
 

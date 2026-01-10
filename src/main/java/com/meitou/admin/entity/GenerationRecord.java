@@ -97,6 +97,17 @@ public class GenerationRecord {
     private Integer deleted;
 
     /**
+     * 外部内容ID/PID
+     */
+    private String pid;
+
+    /**
+     * 失败原因
+     */
+    @TableField("failure_reason")
+    private String failureReason;
+
+    /**
      * 创建时间
      */
     @TableField(fill = FieldFill.INSERT)

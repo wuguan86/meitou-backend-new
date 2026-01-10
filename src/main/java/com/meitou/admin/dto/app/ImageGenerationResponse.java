@@ -34,4 +34,9 @@ public class ImageGenerationResponse {
      * 视频URL（用于视频生成任务）
      */
     private String videoUrl;
+
+    /**
+     * 外部任务ID/PID (用于后续操作，如保存角色)
+     */
+    private String pid;
 }

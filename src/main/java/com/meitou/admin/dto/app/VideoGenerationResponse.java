@@ -27,5 +27,15 @@ public class VideoGenerationResponse {
      * 错误消息（如果失败）
      */
     private String errorMessage;
+
+    /**
+     * 外部内容ID/PID
+     */
+    private String pid;
+
+    /**
+     * 失败原因
+     */
+    private String failureReason;
 }
 

@@ -16,6 +16,7 @@ import org.springframework.util.StreamUtils;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -60,7 +61,8 @@ public class RechargeController {
     @PostMapping("/create")
     public Result<RechargeOrderResponse> createOrder(
             @Valid @RequestBody RechargeOrderRequest request,
-            @RequestHeader(value = "Authorization", required = false) String token) {
+            @RequestHeader(value = "Authorization", required = false) String token,
+            HttpServletRequest httpServletRequest) {
         try {
             // 从Token中提取用户ID
             Long userId = TokenUtil.getUserIdFromToken(token);
@@ -68,7 +70,8 @@ public class RechargeController {
                 return Result.error("未登录或Token无效");
             }
             
-            RechargeOrderResponse response = rechargeService.createOrder(userId, request);
+            String userAgent = httpServletRequest.getHeader("User-Agent");
+            RechargeOrderResponse response = rechargeService.createOrder(userId, request, userAgent);
             return Result.success("创建订单成功", response);
         } catch (BusinessException e) {
             return Result.error(e.getCode(), e.getMessage());
@@ -80,30 +83,33 @@ public class RechargeController {
     
     /**
      * 微信支付回调
-     * 微信支付回调使用XML格式，需要从请求体中读取XML字符串
+     * 微信支付回调使用JSON格式，需要从请求体中读取原始字符串
      * 
      * @param request HTTP请求对象
-     * @return 处理结果（SUCCESS或FAIL）
+     * @return 处理结果（JSON）
      */
     @PostMapping("/callback/wechat")
     public String wechatCallback(HttpServletRequest request) {
         try {
-            // 从请求体中读取XML字符串
             InputStream inputStream = request.getInputStream();
-            String callbackXml = StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8);
-            
-            log.info("收到微信支付回调，XML内容：{}", callbackXml);
-            
-            // 处理微信支付回调
-            boolean success = rechargeService.handleWechatPaymentCallback(callbackXml);
+            String callbackBody = StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8);
+
+            Map<String, String> headers = new HashMap<>();
+            Enumeration<String> headerNames = request.getHeaderNames();
+            while (headerNames != null && headerNames.hasMoreElements()) {
+                String headerName = headerNames.nextElement();
+                headers.put(headerName, request.getHeader(headerName));
+            }
+
+            boolean success = rechargeService.handleWechatPaymentCallbackV3(callbackBody, headers);
             if (success) {
-                return "<xml><return_code><![CDATA[SUCCESS]]></return_code></xml>";
+                return "{\"code\":\"SUCCESS\",\"message\":\"成功\"}";
             } else {
-                return "<xml><return_code><![CDATA[FAIL]]></return_code></xml>";
+                return "{\"code\":\"FAIL\",\"message\":\"失败\"}";
             }
         } catch (Exception e) {
             log.error("处理微信支付回调失败", e);
-            return "<xml><return_code><![CDATA[FAIL]]></return_code></xml>";
+            return "{\"code\":\"FAIL\",\"message\":\"失败\"}";
         }
     }
     

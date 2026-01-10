@@ -12,6 +12,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.concurrent.TimeUnit;
 import java.io.IOException;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -140,6 +141,9 @@ public class GenerationService {
             // 构建请求参数
             Map<String, Object> apiRequest = buildTextToImageRequest(request, platform);
             
+            // 应用参数映射（如果接口配置了参数映射）
+            apiRequest = applyParameterMapping(apiRequest, txt2imgInterface);
+            
             // 调用API
             String responseJson = callApi(txt2imgInterface, platform, apiRequest);
 
@@ -181,6 +185,7 @@ public class GenerationService {
                         }
                         params.put("taskId", taskId);
                         record.setGenerationParams(objectMapper.writeValueAsString(params));
+                        record.setPid(taskId); // 保存外部任务ID
                         generationRecordMapper.updateById(record);
                     } catch (Exception e) {
                         log.warn("保存taskId失败: {}", e.getMessage());
@@ -189,6 +194,7 @@ public class GenerationService {
                     ImageGenerationResponse response = new ImageGenerationResponse();
                     response.setTaskId(String.valueOf(record.getId()));
                     response.setStatus("processing");
+                    response.setPid(taskId); // 返回外部任务ID
                     return response;
                 } else {
                     log.warn("文生图异步请求(webHook=-1)未找到taskId，响应: {}", responseJson);
@@ -226,7 +232,7 @@ public class GenerationService {
             log.error("文生图失败：{}", e.getMessage(), e);
             
             // 阶段三：失败处理（更新记录+退款）
-            failGenerationTask(record.getId(), userId, cost);
+            failGenerationTask(record.getId(), userId, cost, e.getMessage());
             
             throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "文生图失败：" + e.getMessage());
         }
@@ -318,6 +324,7 @@ public class GenerationService {
                         }
                         params.put("taskId", taskId);
                         record.setGenerationParams(objectMapper.writeValueAsString(params));
+                        record.setPid(taskId); // 保存外部任务ID
                         generationRecordMapper.updateById(record);
                     } catch (Exception e) {
                         log.warn("保存taskId失败: {}", e.getMessage());
@@ -326,6 +333,7 @@ public class GenerationService {
                     ImageGenerationResponse response = new ImageGenerationResponse();
                     response.setTaskId(String.valueOf(record.getId()));
                     response.setStatus("processing");
+                    response.setPid(taskId); // 返回外部任务ID
                     return response;
                 } else {
                     log.warn("图生图异步请求(webHook=-1)未找到taskId，响应: {}", responseJson);
@@ -362,7 +370,7 @@ public class GenerationService {
             log.error("图生图失败：{}", e.getMessage(), e);
             
             // 阶段三：失败处理（更新记录+退款）
-            failGenerationTask(record.getId(), userId, cost);
+            failGenerationTask(record.getId(), userId, cost, e.getMessage());
             
             throw new BusinessException(ErrorCode.GENERATION_FAILED.getCode(), "图生图失败：" + e.getMessage());
         }
@@ -431,6 +439,7 @@ public class GenerationService {
                         }
                         params.put("taskId", taskId);
                         record.setGenerationParams(objectMapper.writeValueAsString(params));
+                        record.setPid(taskId); // 保存外部任务ID
                         generationRecordMapper.updateById(record);
                     } catch (Exception e) {
                         log.warn("保存taskId失败: {}", e.getMessage());
@@ -439,6 +448,7 @@ public class GenerationService {
                     VideoGenerationResponse response = new VideoGenerationResponse();
                     response.setTaskId(String.valueOf(record.getId()));
                     response.setStatus("processing");
+                    response.setPid(taskId); // 返回外部任务ID
                     return response;
                 } else {
                     log.warn("文生视频异步请求(webHook=-1)未找到taskId，响应: {}", responseJson);
@@ -446,6 +456,17 @@ public class GenerationService {
             }
 
             String videoUrl = parseVideoUrl(responseJson);
+            
+            // Extract PID and Failure Reason
+            String pid = null;
+            String failureReason = null;
+            try {
+                JsonNode root = objectMapper.readTree(responseJson);
+                pid = extractPidFromNode(root);
+                failureReason = extractFailureReasonFromNode(root);
+            } catch (Exception e) {
+                log.warn("提取PID或失败原因失败", e);
+            }
             
             // 上传视频到OSS
             String ossUrl;
@@ -461,18 +482,20 @@ public class GenerationService {
             if (ossUrl.contains("aliyuncs.com")) {
                 thumbnailUrl = ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast";
             }
-            completeGenerationTask(record.getId(), ossUrl, thumbnailUrl);
+            completeGenerationTask(record.getId(), ossUrl, thumbnailUrl, pid, failureReason);
             
             VideoGenerationResponse response = new VideoGenerationResponse();
             response.setVideoUrl(ossUrl);
             response.setStatus("success");
+            response.setPid(pid);
+            response.setFailureReason(failureReason);
             return response;
             
         } catch (Exception e) {
             log.error("文生视频失败：{}", e.getMessage(), e);
             
             // 阶段三：失败处理（更新记录+退款）
-            failGenerationTask(record.getId(), userId, cost);
+            failGenerationTask(record.getId(), userId, cost, e.getMessage());
             
             String errorMsg = e.getMessage();
             if (errorMsg != null && (errorMsg.contains("Unrecognized token") || errorMsg.contains("JsonParseException"))) {
@@ -490,6 +513,10 @@ public class GenerationService {
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+
+        if (request.getUrls() != null && request.getUrls().size() > 3) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR.getCode(), "最多只能上传3张参考图片");
         }
         
         ApiPlatform platform = findPlatformByType("img2video", request.getModel(), null);
@@ -545,6 +572,7 @@ public class GenerationService {
                         }
                         params.put("taskId", taskId);
                         record.setGenerationParams(objectMapper.writeValueAsString(params));
+                        record.setPid(taskId); // 保存外部任务ID
                         generationRecordMapper.updateById(record);
                     } catch (Exception e) {
                         log.warn("保存taskId失败: {}", e.getMessage());
@@ -553,6 +581,7 @@ public class GenerationService {
                     VideoGenerationResponse response = new VideoGenerationResponse();
                     response.setTaskId(String.valueOf(record.getId()));
                     response.setStatus("processing");
+                    response.setPid(taskId); // 返回外部任务ID
                     return response;
                 } else {
                     log.warn("图生视频异步请求(webHook=-1)未找到taskId，响应: {}", responseJson);
@@ -560,6 +589,17 @@ public class GenerationService {
             }
 
             String videoUrl = parseVideoUrl(responseJson);
+            
+            // Extract PID and Failure Reason
+            String pid = null;
+            String failureReason = null;
+            try {
+                JsonNode root = objectMapper.readTree(responseJson);
+                pid = extractPidFromNode(root);
+                failureReason = extractFailureReasonFromNode(root);
+            } catch (Exception e) {
+                log.warn("提取PID或失败原因失败", e);
+            }
             
             // 上传视频到OSS
             String ossUrl;
@@ -577,18 +617,20 @@ public class GenerationService {
             } else if (ossUrl.contains("aliyuncs.com")) {
                 thumbnailUrl = ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast";
             }
-            completeGenerationTask(record.getId(), ossUrl, thumbnailUrl);
+            completeGenerationTask(record.getId(), ossUrl, thumbnailUrl, pid, failureReason);
             
             VideoGenerationResponse response = new VideoGenerationResponse();
             response.setVideoUrl(ossUrl);
             response.setStatus("success");
+            response.setPid(pid);
+            response.setFailureReason(failureReason);
             return response;
             
         } catch (Exception e) {
             log.error("图生视频失败：{}", e.getMessage(), e);
             
             // 阶段三：失败处理（更新记录+退款）
-            failGenerationTask(record.getId(), userId, cost);
+            failGenerationTask(record.getId(), userId, cost, e.getMessage());
             
             String errorMsg = e.getMessage();
             if (errorMsg != null && (errorMsg.contains("Unrecognized token") || errorMsg.contains("JsonParseException"))) {
@@ -669,7 +711,11 @@ public class GenerationService {
     }
 
     private Map<String, Object> buildImageToVideoRequest(ImageToVideoRequest request, ApiPlatform platform) {
-        return applyParameterMappings(new HashMap<>(), request, platform.getId(), request.getModel());
+        Map<String, Object> params = applyParameterMappings(new HashMap<>(), request, platform.getId(), request.getModel());
+        if (request.getRemixTargetId() != null && !request.getRemixTargetId().isEmpty()) {
+            params.put("remixTargetId", request.getRemixTargetId());
+        }
+        return params;
     }
 
     private String parseVideoUrl(String responseJson) {
@@ -853,6 +899,49 @@ public class GenerationService {
     }
 
     /**
+     * 从JsonNode中提取PID
+     */
+    private String extractPidFromNode(JsonNode node) {
+        if (node.has("results") && node.get("results").isArray()) {
+            JsonNode results = node.get("results");
+            if (results.size() > 0) {
+                JsonNode first = results.get(0);
+                if (first.has("pid")) return first.get("pid").asText();
+            }
+        }
+        
+        if (node.has("data")) {
+            JsonNode data = node.get("data");
+            if (data.has("results") && data.get("results").isArray()) {
+                JsonNode results = data.get("results");
+                if (results.size() > 0) {
+                    JsonNode first = results.get(0);
+                    if (first.has("pid")) return first.get("pid").asText();
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * 从JsonNode中提取失败原因
+     */
+    private String extractFailureReasonFromNode(JsonNode node) {
+        if (node.has("failure_reason") && !node.get("failure_reason").isNull()) {
+            String reason = node.get("failure_reason").asText();
+            if (reason != null && !reason.isEmpty()) return reason;
+        }
+        
+        if (node.has("error") && !node.get("error").isNull()) {
+             String error = node.get("error").asText();
+             if (error != null && !error.isEmpty()) return error;
+        }
+        
+        return null;
+    }
+
+    /**
      * 开启生成任务（事务：扣费+记录+流水）
      */
     private GenerationRecord startGenerationTask(Long userId, String username, String type, String fileType, String model, String prompt, Integer cost, Object requestParams) {
@@ -901,53 +990,68 @@ public class GenerationService {
      */
     private void completeAndSplitGenerationTask(Long recordId, List<String> contentUrls, String firstThumbnailUrl) {
         transactionTemplate.execute(status -> {
-            GenerationRecord originalRecord = generationRecordMapper.selectById(recordId);
-            if (originalRecord != null && !contentUrls.isEmpty()) {
-                // 1. 更新原始记录（存第一张图）
-                originalRecord.setStatus("success");
-                originalRecord.setContentUrl(contentUrls.get(0));
-                originalRecord.setThumbnailUrl(firstThumbnailUrl != null ? firstThumbnailUrl : contentUrls.get(0));
-                generationRecordMapper.updateById(originalRecord);
-                
-                // 2. 如果有多张图，创建新记录
-                for (int i = 1; i < contentUrls.size(); i++) {
-                    String url = contentUrls.get(i);
-                    GenerationRecord newRecord = new GenerationRecord();
-                    // 复制属性
-                    newRecord.setUserId(originalRecord.getUserId());
-                    newRecord.setUsername(originalRecord.getUsername());
-                    newRecord.setSiteId(originalRecord.getSiteId());
-                    newRecord.setType(originalRecord.getType());
-                    newRecord.setFileType(originalRecord.getFileType());
-                    newRecord.setModel(originalRecord.getModel());
-                    newRecord.setPrompt(originalRecord.getPrompt());
-                    newRecord.setGenerationParams(originalRecord.getGenerationParams());
-                    newRecord.setCost(0); // 额外记录不重复扣费
-                    newRecord.setStatus("success");
-                    newRecord.setContentUrl(url);
-                    newRecord.setThumbnailUrl(url); // 图片的缩略图就是它自己
-                    
-                    generationRecordMapper.insert(newRecord);
-                }
+            if (contentUrls == null || contentUrls.isEmpty()) {
+                return null;
             }
+
+            GenerationRecord originalRecord = generationRecordMapper.selectById(recordId);
+            if (originalRecord == null) {
+                return null;
+            }
+
+            UpdateWrapper<GenerationRecord> updateOriginal = new UpdateWrapper<>();
+            updateOriginal.eq("id", recordId);
+            updateOriginal.eq("status", "processing");
+            updateOriginal.set("status", "success");
+            updateOriginal.set("content_url", contentUrls.get(0));
+            updateOriginal.set("thumbnail_url", firstThumbnailUrl != null ? firstThumbnailUrl : contentUrls.get(0));
+
+            int updatedRows = generationRecordMapper.update(null, updateOriginal);
+            if (updatedRows == 0) {
+                return null;
+            }
+
+            for (int i = 1; i < contentUrls.size(); i++) {
+                String url = contentUrls.get(i);
+                GenerationRecord newRecord = new GenerationRecord();
+                newRecord.setUserId(originalRecord.getUserId());
+                newRecord.setUsername(originalRecord.getUsername());
+                newRecord.setSiteId(originalRecord.getSiteId());
+                newRecord.setType(originalRecord.getType());
+                newRecord.setFileType(originalRecord.getFileType());
+                newRecord.setModel(originalRecord.getModel());
+                newRecord.setPrompt(originalRecord.getPrompt());
+                newRecord.setGenerationParams(originalRecord.getGenerationParams());
+                newRecord.setCost(0);
+                newRecord.setStatus("success");
+                newRecord.setContentUrl(url);
+                newRecord.setThumbnailUrl(url);
+
+                generationRecordMapper.insert(newRecord);
+            }
+
             return null;
         });
     }
 
-    /**
-     * 完成生成任务（事务：更新记录）
-     */
-    private void completeGenerationTask(Long recordId, String contentUrl, String thumbnailUrl) {
+    private void completeGenerationTask(Long recordId, String contentUrl, String thumbnailUrl, String pid, String failureReason) {
         transactionTemplate.execute(status -> {
-            GenerationRecord record = generationRecordMapper.selectById(recordId);
-            if (record != null) {
-                record.setStatus("success");
-                record.setContentUrl(contentUrl);
-                if (thumbnailUrl != null) {
-                    record.setThumbnailUrl(thumbnailUrl);
-                }
-                generationRecordMapper.updateById(record);
+            UpdateWrapper<GenerationRecord> update = new UpdateWrapper<>();
+            update.eq("id", recordId);
+            update.eq("status", "processing");
+            update.set("status", "success");
+            update.set("content_url", contentUrl);
+            if (thumbnailUrl != null) {
+                update.set("thumbnail_url", thumbnailUrl);
             }
+            if (pid != null) {
+                update.set("pid", pid);
+            }
+            if (failureReason != null) {
+                update.set("failure_reason", failureReason);
+            }
+
+            generationRecordMapper.update(null, update);
             return null;
         });
     }
@@ -955,12 +1059,15 @@ public class GenerationService {
     /**
      * 失败处理（事务：更新记录+退款+流水）
      */
-    private void failGenerationTask(Long recordId, Long userId, Integer cost) {
+    private void failGenerationTask(Long recordId, Long userId, Integer cost, String failureReason) {
         transactionTemplate.execute(status -> {
             GenerationRecord record = generationRecordMapper.selectById(recordId);
             // 幂等性检查：只有状态为processing时才退款
             if (record != null && "processing".equals(record.getStatus())) {
                 record.setStatus("failed");
+                if (failureReason != null) {
+                    record.setFailureReason(failureReason);
+                }
                 generationRecordMapper.updateById(record);
                 // 退款
                 userMapper.deductBalance(userId, -cost);
@@ -1283,8 +1390,10 @@ public class GenerationService {
             context.putIfAbsent("firstFrameUrl", r.getFirstFrameUrl());
             context.putIfAbsent("lastFrameUrl", r.getLastFrameUrl());
             context.putIfAbsent("urls", r.getUrls());
+            context.putIfAbsent("remixTargetId", r.getRemixTargetId());
             context.putIfAbsent("webHook", r.getWebHook());
             context.putIfAbsent("shutProgress", r.getShutProgress());
+            context.putIfAbsent("characters", r.getCharacters());
             resolution = r.getResolution();
             aspectRatio = r.getAspectRatio();
         }
@@ -1978,9 +2087,13 @@ public class GenerationService {
                                         thumbnailUrl = ossUrl + "?x-oss-process=video/snapshot,t_1000,f_jpg,w_800,h_0,m_fast";
                                     }
                                     
-                                    completeGenerationTask(record.getId(), ossUrl, thumbnailUrl);
+                                    // 尝试提取PID
+                                    String pid = extractPidFromNode(root);
+                                    
+                                    completeGenerationTask(record.getId(), ossUrl, thumbnailUrl, pid, null);
                                     response.setVideoUrl(ossUrl);
                                     response.setStatus("success");
+                                    response.setPid(pid);
                                     response.setProgress(100);
                                     
                                 } else {
@@ -2020,7 +2133,7 @@ public class GenerationService {
                                     reason += ": " + dataNode.get("error").asText();
                                 }
                                 
-                                failGenerationTask(record.getId(), record.getUserId(), record.getCost());
+                                failGenerationTask(record.getId(), record.getUserId(), record.getCost(), reason);
                                 response.setStatus("failed");
                                 response.setErrorMessage(reason);
                             } else if ("RUNNING".equalsIgnoreCase(status)) {
@@ -2034,7 +2147,7 @@ public class GenerationService {
                 // 如果是404，说明任务可能不存在或URL错误，直接标记为失败，避免前端无限轮询
                 if (e.getMessage() != null && e.getMessage().contains("404")) {
                     // 确保退款和更新状态
-                    failGenerationTask(record.getId(), record.getUserId(), record.getCost());
+                    failGenerationTask(record.getId(), record.getUserId(), record.getCost(), e.getMessage());
                     
                     response.setStatus("failed");
                     response.setErrorMessage("查询任务失败: 任务不存在或已过期 (404)");

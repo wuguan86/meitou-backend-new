@@ -344,6 +344,8 @@ CREATE TABLE `payment_configs` (
                                    `id` bigint NOT NULL AUTO_INCREMENT COMMENT '配置ID',
                                    `payment_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '支付方式：wechat-微信支付，alipay-支付宝支付，bank_transfer-对公转账',
                                    `config_json` text COLLATE utf8mb4_unicode_ci COMMENT '配置信息（JSON格式）',
+                                   `wechat_pay_public_key_id` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '微信支付平台公钥ID（公钥模式）',
+                                   `wechat_pay_public_key` text COLLATE utf8mb4_unicode_ci COMMENT '微信支付平台公钥（PEM，公钥模式）',
                                    `is_enabled` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否启用：0-否，1-是',
                                    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                                    `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -358,15 +360,15 @@ CREATE TABLE `payment_configs` (
 -- ----------------------------
 -- Records of payment_configs
 -- ----------------------------
-INSERT INTO `payment_configs` VALUES ('1', 'wechat', null, '1', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
-INSERT INTO `payment_configs` VALUES ('2', 'alipay', null, '1', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
-INSERT INTO `payment_configs` VALUES ('3', 'bank_transfer', null, '0', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
-INSERT INTO `payment_configs` VALUES ('4', 'wechat', null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
-INSERT INTO `payment_configs` VALUES ('5', 'alipay', null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
-INSERT INTO `payment_configs` VALUES ('6', 'bank_transfer', null, '0', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
-INSERT INTO `payment_configs` VALUES ('7', 'wechat', null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
-INSERT INTO `payment_configs` VALUES ('8', 'alipay', null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
-INSERT INTO `payment_configs` VALUES ('9', 'bank_transfer', null, '0', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
+INSERT INTO `payment_configs` VALUES ('1', 'wechat', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
+INSERT INTO `payment_configs` VALUES ('2', 'alipay', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
+INSERT INTO `payment_configs` VALUES ('3', 'bank_transfer', null, null, null, '0', '2025-12-20 00:34:14', '2025-12-27 00:05:59', '0', '1');
+INSERT INTO `payment_configs` VALUES ('4', 'wechat', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
+INSERT INTO `payment_configs` VALUES ('5', 'alipay', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
+INSERT INTO `payment_configs` VALUES ('6', 'bank_transfer', null, null, null, '0', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '2');
+INSERT INTO `payment_configs` VALUES ('7', 'wechat', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
+INSERT INTO `payment_configs` VALUES ('8', 'alipay', null, null, null, '1', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
+INSERT INTO `payment_configs` VALUES ('9', 'bank_transfer', null, null, null, '0', '2025-12-20 00:34:14', '2025-12-20 00:34:14', '0', '3');
 
 -- ----------------------------
 -- Table structure for published_contents

@@ -3,6 +3,7 @@ package com.meitou.admin.service.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.binarywang.wxpay.bean.notify.SignatureHeader;
 import com.meitou.admin.common.SiteContext;
 import com.meitou.admin.dto.app.*;
 import com.meitou.admin.entity.PaymentConfig;
@@ -20,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.RoundingMode;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -49,10 +51,11 @@ public class RechargeService {
      * 
      * @param userId 用户ID
      * @param request 创建订单请求
+     * @param userAgent 浏览器User-Agent（用于支付宝支付渠道判断）
      * @return 订单响应
      */
     @Transactional
-    public RechargeOrderResponse createOrder(Long userId, RechargeOrderRequest request) {
+    public RechargeOrderResponse createOrder(Long userId, RechargeOrderRequest request, String userAgent) {
         // 查询用户
         User user = userMapper.selectById(userId);
         if (user == null) {
@@ -108,7 +111,8 @@ public class RechargeService {
                     orderNo,
                     request.getAmount().toString(),
                     "算力充值",
-                    paymentConfig.getConfigJson()
+                    paymentConfig.getConfigJson(),
+                    userAgent
                 );
             } else {
                 throw new BusinessException(ErrorCode.PAYMENT_METHOD_NOT_SUPPORTED);
@@ -142,7 +146,52 @@ public class RechargeService {
         
         return response;
     }
-    
+
+    @Transactional
+    public boolean handleWechatPaymentCallbackV3(String callbackBody, Map<String, String> headers) {
+        Long originalSiteId = SiteContext.getSiteId();
+
+        try {
+            SignatureHeader signatureHeader = buildWechatSignatureHeader(headers);
+
+            PaymentConfig paymentConfig = getPaymentConfig("wechat");
+            Map<String, String> callbackData = null;
+
+            if (paymentConfig != null && Boolean.TRUE.equals(paymentConfig.getIsEnabled())) {
+                callbackData = paymentService.parseWechatCallbackV3(callbackBody, signatureHeader, paymentConfig.getConfigJson());
+            } else {
+                List<PaymentConfig> enabledWechatConfigs = paymentConfigMapper.selectEnabledByPaymentTypeIgnoreTenant("wechat");
+                for (PaymentConfig candidate : enabledWechatConfigs) {
+                    try {
+                        callbackData = paymentService.parseWechatCallbackV3(callbackBody, signatureHeader, candidate.getConfigJson());
+                        paymentConfig = candidate;
+                        break;
+                    } catch (BusinessException ignored) {
+                    }
+                }
+            }
+
+            if (paymentConfig == null || callbackData == null || callbackData.isEmpty()) {
+                return false;
+            }
+
+            if (SiteContext.getSiteId() == null && paymentConfig.getSiteId() != null) {
+                SiteContext.setSiteId(paymentConfig.getSiteId());
+            }
+
+            return handleVerifiedWechatV3Callback(callbackData);
+        } catch (Exception e) {
+            log.error("处理微信支付回调失败", e);
+            return false;
+        } finally {
+            if (originalSiteId != null) {
+                SiteContext.setSiteId(originalSiteId);
+            } else {
+                SiteContext.clear();
+            }
+        }
+    }
+
     /**
      * 处理支付回调
      * 
@@ -190,14 +239,12 @@ public class RechargeService {
                 log.error("支付配置不存在：{}", paymentType);
                 return false;
             }
-            
+
             // 验证回调签名
             boolean verified = false;
             if ("wechat".equals(paymentType)) {
-                // 微信支付回调需要将Map转换为XML字符串进行验证
-                // 注意：这里简化处理，实际应该使用XML格式进行验证
-                String callbackXml = convertMapToXml(callbackData);
-                verified = paymentService.verifyWechatCallback(callbackXml, paymentConfig.getConfigJson());
+                log.error("微信支付回调已升级到V3，请使用JSON回调入口");
+                return false;
             } else if ("alipay".equals(paymentType)) {
                 verified = paymentService.verifyAlipayCallback(callbackData, paymentConfig.getConfigJson());
             }
@@ -234,29 +281,7 @@ public class RechargeService {
             rechargeOrderMapper.updateById(order);
             
             // 更新用户余额（原子操作）
-            User user = userMapper.selectById(order.getUserId());
-            if (user != null) {
-                int oldBalance = user.getBalance() != null ? user.getBalance() : 0;
-                int newBalance = oldBalance + order.getPoints();
-                user.setBalance(newBalance);
-                userMapper.updateById(user);
-                
-                // 记录流水
-                UserTransaction transaction = new UserTransaction();
-                transaction.setUserId(user.getId());
-                transaction.setType("RECHARGE");
-                transaction.setAmount(order.getPoints());
-                transaction.setBalanceAfter(newBalance);
-                transaction.setReferenceId(order.getId());
-                transaction.setDescription("算力充值");
-                transaction.setSiteId(order.getSiteId());
-                transaction.setCreatedAt(LocalDateTime.now());
-                transaction.setDeleted(0);
-                userTransactionMapper.insert(transaction);
-                
-                log.info("用户余额更新成功：用户ID={}, 增加算力={}, 当前余额={}", 
-                    user.getId(), order.getPoints(), user.getBalance());
-            }
+            applyRechargeToUser(order);
             
             return true;
         } catch (Exception e) {
@@ -411,8 +436,8 @@ public class RechargeService {
     }
     
     /**
-     * 处理微信支付回调（XML格式）
-     * 
+     * 处理微信支付回调（旧版XML格式）
+     *
      * @param callbackXml 回调XML字符串
      * @return 是否处理成功
      */
@@ -452,6 +477,128 @@ public class RechargeService {
             }
         }
         return result;
+    }
+
+    private boolean handleVerifiedWechatV3Callback(Map<String, String> callbackData) {
+        String orderNo = callbackData.get("out_trade_no");
+        if (orderNo == null || orderNo.isBlank()) {
+            return false;
+        }
+
+        RechargeOrder order = rechargeOrderMapper.selectByOrderNo(orderNo);
+        if (order == null) {
+            log.error("订单不存在：{}", orderNo);
+            return false;
+        }
+
+        if (order.getSiteId() != null) {
+            SiteContext.setSiteId(order.getSiteId());
+        }
+
+        if ("paid".equals(order.getStatus())) {
+            log.info("订单已支付，跳过处理：{}", orderNo);
+            return true;
+        }
+
+        String tradeState = callbackData.get("trade_state");
+        if (!"SUCCESS".equals(tradeState)) {
+            log.warn("支付未成功：订单号={}, 状态={}", orderNo, tradeState);
+            order.setStatus("failed");
+            rechargeOrderMapper.updateById(order);
+            return false;
+        }
+
+        if (!verifyWechatAmount(order, callbackData)) {
+            log.error("订单金额校验失败：订单号={}", orderNo);
+            order.setStatus("failed");
+            rechargeOrderMapper.updateById(order);
+            return false;
+        }
+
+        order.setStatus("paid");
+        order.setThirdPartyOrderNo(callbackData.get("transaction_id"));
+        order.setPaidAt(LocalDateTime.now());
+        order.setCompletedAt(LocalDateTime.now());
+        try {
+            order.setCallbackInfo(objectMapper.writeValueAsString(callbackData));
+        } catch (Exception e) {
+            log.error("序列化回调信息失败", e);
+        }
+        rechargeOrderMapper.updateById(order);
+
+        applyRechargeToUser(order);
+        return true;
+    }
+
+    private boolean verifyWechatAmount(RechargeOrder order, Map<String, String> callbackData) {
+        String amountTotal = callbackData.get("amount_total");
+        if (amountTotal == null || amountTotal.isBlank() || order.getAmount() == null) {
+            return true;
+        }
+
+        try {
+            int paidFen = Integer.parseInt(amountTotal);
+            int expectedFen = order.getAmount()
+                .multiply(new BigDecimal("100"))
+                .setScale(0, RoundingMode.HALF_UP)
+                .intValueExact();
+            return paidFen == expectedFen;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void applyRechargeToUser(RechargeOrder order) {
+        if (order == null || order.getUserId() == null || order.getPoints() == null || order.getPoints() <= 0) {
+            return;
+        }
+
+        int updatedRows = userMapper.incrementBalance(order.getUserId(), order.getPoints());
+        if (updatedRows <= 0) {
+            log.error("用户余额更新失败：用户ID={}, 增加算力={}", order.getUserId(), order.getPoints());
+            return;
+        }
+
+        User user = userMapper.selectById(order.getUserId());
+        Integer balanceAfter = user != null ? user.getBalance() : null;
+
+        UserTransaction transaction = new UserTransaction();
+        transaction.setUserId(order.getUserId());
+        transaction.setType("RECHARGE");
+        transaction.setAmount(order.getPoints());
+        transaction.setBalanceAfter(balanceAfter != null ? balanceAfter : 0);
+        transaction.setReferenceId(order.getId());
+        transaction.setDescription("算力充值");
+        transaction.setSiteId(order.getSiteId());
+        transaction.setCreatedAt(LocalDateTime.now());
+        transaction.setDeleted(0);
+        userTransactionMapper.insert(transaction);
+    }
+
+    private SignatureHeader buildWechatSignatureHeader(Map<String, String> headers) {
+        String timestamp = getHeaderIgnoreCase(headers, "Wechatpay-Timestamp");
+        String nonce = getHeaderIgnoreCase(headers, "Wechatpay-Nonce");
+        String signature = getHeaderIgnoreCase(headers, "Wechatpay-Signature");
+        String serial = getHeaderIgnoreCase(headers, "Wechatpay-Serial");
+
+        SignatureHeader header = new SignatureHeader();
+        header.setTimeStamp(timestamp);
+        header.setNonce(nonce);
+        header.setSignature(signature);
+        header.setSerial(serial);
+        return header;
+    }
+
+    private String getHeaderIgnoreCase(Map<String, String> headers, String name) {
+        if (headers == null || name == null) {
+            return null;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 }
 
